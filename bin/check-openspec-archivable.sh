@@ -25,7 +25,13 @@
 # `bin/` is this project's own directory; the installer neither creates nor replaces it. This file
 # EDITS NOTHING the installer owns. Same answer Issue #11 reached for `bin/watch.sh`.
 #
-# THREE OUTCOMES, AND THEY NEVER SHARE AN EXIT CODE OR A RENDERING:
+# THIS GATE HAS NO COMMIT STATUS OF ITS OWN, AND CANNOT HAVE ONE. `.github/workflows/` is
+# installer-owned and replaced wholesale, so a project cannot add a job. The only seam a
+# project-owned check has into CI is `make ci`, which the installer's `Build and tests` job runs.
+# So a red from here is labelled "Build and tests failed" and looks exactly like a broken unit
+# test — see `banner()` below, which is the deliberate answer to that.
+#
+# FOUR OUTCOMES, AND THEY NEVER SHARE AN EXIT CODE OR A RENDERING:
 #
 #   0  pass            every change in scope validates, or there is no change in scope
 #   0  NOT APPLICABLE  this project has no `openspec/` directory — pass, and SAY SO. A gate that
@@ -49,8 +55,8 @@
 # branch's changes are archivable. A failure under the widened scope names the change, so a change
 # that is not yours is visibly not yours.
 #
-# Usage: check-archivable.sh [<base-sha>]
-#        check-archivable.sh --self-test
+# Usage: check-openspec-archivable.sh [<base-sha>]
+#        check-openspec-archivable.sh --self-test
 #
 # Environment:
 #   OPENSPEC_BIN        an explicit CLI to use. Probed like any other candidate, never trusted.
@@ -85,8 +91,32 @@ resolve_cli() {
   return 1
 }
 
+# ── saying WHO IS SPEAKING ───────────────────────────────────────────────────────────────────────
+# THIS GATE HAS NO COMMIT STATUS OF ITS OWN AND CANNOT HAVE ONE. `.github/workflows/` is
+# installer-owned and replaced wholesale, so a project cannot add a job; the only seam a
+# project-owned check has into CI is `make ci`, which CI runs inside `Build and tests`. Verified
+# against gates.yml: `if [ -f Makefile ] && grep -qE '^ci:' Makefile; then make ci`.
+#
+# THE CONSEQUENCE IS THIS BANNER. A red from here arrives labelled "Build and tests failed", which
+# reads as a broken unit test or a compile error, and the reader goes looking for one. That would
+# move the confusion rather than remove it — and confusion is the whole defect: the change this
+# gate catches is one where everything looks fine, five gates green and a review passed. So every
+# non-pass says who is speaking, in words that need no knowledge that this file exists.
+banner() { # banner <headline>
+  {
+    echo "============================================================================"
+    echo "  $1"
+    echo "  This is the OPENSPEC ARCHIVABILITY GATE speaking, from 'make ci'. It is"
+    echo "  NOT a failing unit test and NOT a compile error — your code is not what is"
+    echo "  being judged here. Reproduce it directly with:"
+    echo "      make archivable            (or ./bin/check-openspec-archivable.sh)"
+    echo "============================================================================"
+  } >&2
+}
+
 cannot_tell() { # cannot_tell <line>...
   local l
+  banner "COULD NOT CHECK whether this branch's OpenSpec change can be archived."
   echo "::error::CANNOT TELL whether this branch's OpenSpec change can be archived." >&2
   for l in "$@"; do printf '  %s\n' "$l" >&2; done
   echo "  This is NOT a finding about your specification and NOT a pass. Nothing was validated." >&2
@@ -181,7 +211,10 @@ run_gate() {
     if [ "$vrc" -eq 0 ]; then
       echo "  archivable: $id"
     else
+      banner "AN OPENSPEC CHANGE ON THIS BRANCH CANNOT BE ARCHIVED: '$id'."
       echo "::error::openspec will NOT archive '$id' — it fails 'openspec validate $id --strict'." >&2
+      echo "  If this lands, the WORK merges and the SPECIFICATION does not, and product finds out" >&2
+      echo "  at archive time. The validator's own errors follow; each names the requirement:" >&2
       printf '%s\n' "$out" | sed 's/^/    /' >&2
       echo "  Fix the change, not the gate. The defect that has cost this project two branches is" >&2
       echo "  lowercase 'shall' in requirement BODY text where the normative keyword must be" >&2
@@ -239,6 +272,11 @@ self_test() {
     # AND IT MUST POINT AT BODIES. A gate telling an author to uppercase '### Requirement:' headers
     # would rename the requirement and move its identifier.
     case "$out" in *"BODY text"*) : ;; *) echo "SELF-TEST FAIL: the message does not point at requirement bodies" >&2; rc=1 ;; esac
+    # AND IT MUST SAY WHO IS SPEAKING. This gate has no commit status of its own — it fails inside
+    # `Build and tests`, where a red reads as a broken test. A refusal that does not identify itself
+    # sends the reader hunting for a unit test that is not broken.
+    case "$out" in *"NOT a failing unit test"*) : ;; *) echo "SELF-TEST FAIL: the refusal does not identify itself, so its red is indistinguishable from a failing test" >&2; rc=1 ;; esac
+    case "$out" in *"make archivable"*) : ;; *) echo "SELF-TEST FAIL: the refusal does not say how to reproduce it locally" >&2; rc=1 ;; esac
 
     # 3. AND A VALID CHANGE MUST PASS IN THE SAME RUN, or arm 2 proves nothing: a gate that fails
     #    on everything catches the defect too and is useless.
@@ -281,6 +319,7 @@ self_test() {
   out=$( cd "$tmp/nocli" && PATH="$tmp/binpath" OPENSPEC_BIN= OPENSPEC_NO_NPX=1 "$BASH" "$me" 2>&1 ); srcrc=$?
   [ "$srcrc" -eq "$EX_CANNOT_TELL" ] || { echo "SELF-TEST FAIL: a missing CLI exited $srcrc, not $EX_CANNOT_TELL — 'could not tell' must not share a code with 'clean'" >&2; rc=1; }
   case "$out" in *"CANNOT TELL"*) : ;; *) echo "SELF-TEST FAIL: a missing CLI did not say it could not tell: $out" >&2; rc=1 ;; esac
+  case "$out" in *"NOT a failing unit test"*) : ;; *) echo "SELF-TEST FAIL: a cannot-tell does not identify itself either, and it lands in the same job" >&2; rc=1 ;; esac
   case "$out" in *"UNVALIDATED: c1"*) : ;; *) echo "SELF-TEST FAIL: a cannot-tell did not name what went unvalidated: $out" >&2; rc=1 ;; esac
 
   # 6. AN UNREACHABLE BASE IS A CANNOT-TELL, and must not read as "this branch touches no change".

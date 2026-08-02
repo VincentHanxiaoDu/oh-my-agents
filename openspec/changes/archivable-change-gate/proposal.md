@@ -19,16 +19,19 @@ A defect that survives five green gates and a careful review is exactly what a g
 
 ## What Changes
 
-- Add `bin/check-archivable.sh`: a project-owned gate that runs `openspec validate <change> --strict`
+- Add `bin/check-openspec-archivable.sh`: a project-owned gate that runs `openspec validate <change> --strict`
   over the in-flight changes in scope and fails a branch carrying one openspec will not archive.
 - Give it three outcomes that never share an exit code or a rendering: pass (0), NOT APPLICABLE for
   a project with no `openspec/` (0, said out loud), fail (1), and CANNOT TELL (3) when no CLI can be
   located or the tree and the range disagree.
 - Locate the CLI by PROBING — `$OPENSPEC_BIN`, `$PATH`, `./node_modules/.bin`, then `npx` — so the
   gate runs on a GitHub runner that has node and no `openspec`, and on darwin where it is under nvm.
-- Add `tests/archivable.test.sh`, which builds its fixture from this repository's own change by
+- Add `tests/openspec-archivable.test.sh`, which builds its fixture from this repository's own change by
   lowercasing `SHALL` in requirement bodies only, and asserts the unmodified copy passes in the same
   run.
+- Make every non-pass identify itself: the gate cannot have a commit status of its own, because
+  `.github/workflows/` is installer-owned, so it fails inside `Build and tests` where a red reads as
+  a broken unit test unless the output says otherwise.
 - Wire both into `make ci` through a new `archivable` target, which is what CI and
   `.workflow/bin/run-gates.sh` both execute.
 - Document it in `README.md` and in `.workflow/dev/AGENT.md`.

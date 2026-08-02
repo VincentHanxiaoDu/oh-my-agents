@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The archivability gate, run against THIS repository rather than against a fixture invented for it.
 #
-# `bin/check-archivable.sh --self-test` covers the gate's arms in throwaway git repositories. This
+# `bin/check-openspec-archivable.sh --self-test` covers the gate's arms in throwaway git repositories. This
 # suite answers a different question, and it is the question that went unanswered twice: does the
 # gate catch THE DEFECT, in THIS repository's real OpenSpec change, as an author would hit it?
 #
@@ -22,7 +22,7 @@
 set -uo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-GATE="$root/bin/check-archivable.sh"
+GATE="$root/bin/check-openspec-archivable.sh"
 
 pass=0; fail=0; skip=0
 ok()   { pass=$((pass+1)); printf '  ok    %s\n' "$1"; }
@@ -113,6 +113,21 @@ else
     case "$out" in
       *"HEADERS in prose"*) ok "the refusal warns against uppercasing headers" ;;
       *) bad "the refusal warns against uppercasing headers" "$out" ;;
+    esac
+    # THE GATE HAS NO COMMIT STATUS OF ITS OWN: it fails inside `Build and tests`, because
+    # `.github/` is installer-owned and a project cannot add a job. So its red is indistinguishable
+    # from a failing unit test unless it says so itself, in words that assume no knowledge of it.
+    case "$out" in
+      *"OPENSPEC ARCHIVABILITY GATE"*) ok "the refusal names the gate that is speaking" ;;
+      *) bad "the refusal names the gate that is speaking" "$out" ;;
+    esac
+    case "$out" in
+      *"NOT a failing unit test"*) ok "…and says it is not a failing test or a compile error" ;;
+      *) bad "…and says it is not a failing test or a compile error" "$out" ;;
+    esac
+    case "$out" in
+      *"make archivable"*) ok "…and gives the command to reproduce it locally" ;;
+      *) bad "…and gives the command to reproduce it locally" "$out" ;;
     esac
   fi
 fi

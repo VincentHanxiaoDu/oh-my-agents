@@ -44,10 +44,10 @@ next install. Nothing under `.workflow/bin/` was modified.
 
 ```
 make archivable OPENSPEC_BASE=origin/main   # only the changes your branch touches
-./bin/check-archivable.sh --self-test       # the gate's own arms
+./bin/check-openspec-archivable.sh --self-test       # the gate's own arms
 ```
 
-`bin/check-archivable.sh` runs `openspec validate <change> --strict`. **`make ci` runs it, so CI
+`bin/check-openspec-archivable.sh` runs `openspec validate <change> --strict`. **`make ci` runs it, so CI
 runs it** — you do not have to remember, and that is the point.
 
 **Why it exists, from Issue #12.** No other gate on a branch runs `openspec validate`.
@@ -60,6 +60,11 @@ was caught only because someone ran `openspec validate` by hand.
 **The defect, and the fix that is NOT the fix.** Requirement **body** text must use uppercase
 `SHALL` or `MUST`. Leave `### Requirement:` **headers in prose** — uppercasing a header renames the
 requirement and moves its identifier, which breaks more than it fixes.
+
+**A red from this gate says "Build and tests failed".** It cannot have a check of its own —
+`.github/workflows/` is installer-owned and a project cannot add a job, so `make ci` is the only
+seam. When it refuses, the output names itself and tells you it is not a failing unit test. Do not
+go looking for a broken test.
 
 **Read its answers as four answers.** `0` validated; `0` + `NOT APPLICABLE` (no `openspec/` here);
 `1` a change openspec will not archive; `3` **CANNOT TELL** — no `openspec` CLI could be located, or

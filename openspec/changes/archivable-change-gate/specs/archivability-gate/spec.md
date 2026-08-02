@@ -86,6 +86,20 @@ print that the scope was widened.
 - **WHEN** the branch's only touched change has been moved into the archive
 - **THEN** the gate exits 0 and says the change was archived rather than reporting nothing was found
 
+### Requirement: A failure identifies the gate that produced it
+
+Because `.github/workflows/` is installer-owned, this gate cannot have a commit status of its own
+and fails inside the `Build and tests` job, where its red is indistinguishable from a failing unit
+test. Every non-pass SHALL therefore name the gate, state that it is not a failing test or a compile
+error, and give the command that reproduces it, in words that assume no knowledge that the gate
+exists.
+
+#### Scenario: a reader sees only "Build and tests failed"
+
+- **WHEN** the gate refuses a change or reports that it could not check one
+- **THEN** the output names the OpenSpec archivability gate, says it is not a failing unit test, and
+  prints the command to reproduce it locally
+
 ### Requirement: The gate survives an installer refresh
 
 The gate SHALL live in project-owned space and MUST NOT be written into `.workflow/bin/`, `.claude/`

@@ -31,10 +31,10 @@ installer and are replaced wholesale on every refresh. Nothing under those paths
 ```
 make ci                                   # runs it, among everything else
 make archivable OPENSPEC_BASE=origin/main # only the changes this branch touches
-./bin/check-archivable.sh --self-test     # a gate that cannot be shown to fail is not a gate
+./bin/check-openspec-archivable.sh --self-test     # a gate that cannot be shown to fail is not a gate
 ```
 
-`bin/check-archivable.sh` runs `openspec validate <change> --strict` and **fails a branch carrying
+`bin/check-openspec-archivable.sh` runs `openspec validate <change> --strict` and **fails a branch carrying
 a change `openspec archive` would refuse**.
 
 **Why.** Nothing else on a branch runs `openspec validate`. `check-tasks-complete.sh` checks only
@@ -46,6 +46,11 @@ out.
 **Fix bodies, never headers.** The normative keyword must be uppercase `SHALL` or `MUST` in
 requirement **body** text. `### Requirement:` headers stay in prose — uppercasing one renames the
 requirement and moves its identifier.
+
+**It has no check of its own, deliberately.** `.github/workflows/` is installer-owned, so a project
+cannot add a job — `make ci` is the only seam, and this gate fails *inside* `Build and tests`. So
+every non-pass names itself, says it is not a failing unit test, and prints the command to reproduce
+it, rather than leaving you hunting for a broken test that does not exist.
 
 **Four answers, and they never share an exit code.** `0` every change in scope validates; `0` +
 `NOT APPLICABLE` for a project with no `openspec/`; `1` a change openspec will not archive; `3`

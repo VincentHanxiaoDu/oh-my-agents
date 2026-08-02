@@ -27,6 +27,6 @@ test:
 OPENSPEC_BASE ?=
 
 archivable:
-	bash ./bin/check-archivable.sh --self-test
-	bash ./tests/archivable.test.sh
-	bash ./bin/check-archivable.sh $(OPENSPEC_BASE)
+	bash ./bin/check-openspec-archivable.sh --self-test
+	bash ./tests/openspec-archivable.test.sh
+	bash ./bin/check-openspec-archivable.sh $(OPENSPEC_BASE)
