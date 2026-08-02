@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- CRITERION 8, on this page as much as on the first one: usable one-handed at 375px, no
+         horizontal PAGE scroll, no interactive target under 44px, nothing that needs hover,
+         right-click or drag. A terminal is the hardest surface in this product to hold to that,
+         because a terminal is 80 columns wide and a phone is not. The answer here is a font size
+         computed at runtime to fit 80 columns, and a pane that scrolls INSIDE ITSELF when it
+         cannot — never the page. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%231c5fd0'/%3E%3Cpath d='M4 6l2.5 2L4 10M8.5 10.5h3.5' stroke='white' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+    <title>oh-my-agents — sessions</title>
+    <style>
+      :root {
+        --bg: #ffffff;
+        --fg: #16181d;
+        --muted: #5b6270;
+        --line: #d9dde5;
+        --card: #f6f7f9;
+        --accent: #1c5fd0;
+        --ok: #0d7a4a;
+        --warn: #8a5a00;
+        --bad: #a32020;
+        --term-bg: #12141a;
+        --term-fg: #dfe3ea;
+        --tap: 44px;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #101216;
+          --fg: #e9ecf1;
+          --muted: #9aa3b2;
+          --line: #2a2f38;
+          --card: #181b21;
+          --accent: #6fa4ff;
+          --ok: #4cc38a;
+          --warn: #e0a33a;
+          --bad: #ff8080;
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+        overflow-x: hidden;
+        max-width: 100%;
+      }
+      main { max-width: 46rem; margin: 0 auto; padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom)); }
+      h1 { font-size: 1.35rem; margin: 0.5rem 0 0.25rem; }
+      h2 { font-size: 1rem; margin: 0 0 0.5rem; }
+      p { margin: 0.5rem 0; }
+      .muted { color: var(--muted); }
+      .wrap { overflow-wrap: anywhere; word-break: break-word; min-width: 0; }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 1rem;
+        margin: 1rem 0;
+        min-width: 0;
+      }
+      .row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
+      /* EVERY INTERACTIVE TARGET IS AT LEAST 44px IN BOTH DIRECTIONS. One rule covering every
+         interactive element type this page uses, so a new control cannot be added under it. */
+      button, a.btn, summary, input, select, textarea {
+        min-height: var(--tap);
+        min-width: var(--tap);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        padding: 0.5rem 1rem;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: var(--bg);
+        color: var(--fg);
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+        text-decoration: none;
+        touch-action: manipulation;
+      }
+      input, textarea { font-weight: 400; justify-content: flex-start; cursor: text; }
+      button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible {
+        outline: 3px solid var(--accent);
+        outline-offset: 2px;
+      }
+      button[disabled] { opacity: 0.5; }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      button.danger { color: var(--bad); border-color: var(--bad); }
+      summary { list-style: none; justify-content: flex-start; }
+      summary::-webkit-details-marker { display: none; }
+      .pill {
+        display: inline-block;
+        padding: 0.25rem 0.6rem;
+        border-radius: 999px;
+        font-size: 0.85rem;
+        font-weight: 700;
+        border: 1px solid currentColor;
+      }
+      /* THE THREE STATES ARE THREE DIFFERENT THINGS TO LOOK AT, not one badge with three words.
+         Criterion 6: an ended session and a live session are never presented identically, and
+         "I cannot tell" is neither of them. */
+      .pill.live { color: var(--ok); }
+      .pill.terminated { color: var(--muted); }
+      .pill.undetermined { color: var(--warn); }
+      ul.sessions { list-style: none; margin: 0; padding: 0; }
+      ul.sessions li { border-top: 1px solid var(--line); padding: 0.75rem 0; min-width: 0; }
+      ul.sessions li:first-child { border-top: 0; }
+      .sid { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85rem; color: var(--muted); }
+
+      /* THE TERMINAL PANE. It scrolls inside its own box in BOTH directions, so however wide the
+         agent's output is, the page itself never scrolls sideways. */
+      #screen {
+        background: var(--term-bg);
+        color: var(--term-fg);
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        padding: 0.5rem;
+        margin: 0;
+        height: 58vh;
+        min-height: 14rem;
+        overflow: auto;
+        -webkit-overflow-scrolling: touch;
+        max-width: 100%;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        /* Replaced at runtime with a size that fits 80 columns in the pane. */
+        font-size: 12px;
+        line-height: 1.25;
+        white-space: pre;
+        tab-size: 8;
+      }
+      .trow { min-height: 1em; }
+      .banner {
+        border-radius: 10px;
+        padding: 0.75rem;
+        margin: 0.75rem 0;
+        border: 1px solid currentColor;
+        font-weight: 600;
+      }
+      .banner.live { color: var(--ok); }
+      .banner.terminated { color: var(--muted); }
+      .banner.undetermined { color: var(--warn); }
+      .banner.error { color: var(--bad); }
+      .composer { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+      .composer input { flex: 1 1 auto; min-width: 0; }
+      .hidden { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Sessions</h1>
+      <p class="muted"><a class="btn" href="/">Host status</a></p>
+
+      <!-- THE LIST -->
+      <section id="list-view">
+        <div class="card">
+          <h2>On this machine</h2>
+          <ul class="sessions" id="sessions"><li class="muted">Asking this host…</li></ul>
+          <div class="row">
+            <button type="button" id="reload">Reload</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Start an agent</h2>
+          <p class="muted wrap" id="pty-note">&nbsp;</p>
+          <div class="composer">
+            <input id="new-command" type="text" inputmode="text" autocapitalize="off" autocorrect="off"
+                   spellcheck="false" placeholder="command, e.g. bash -l" aria-label="Command to run" />
+            <button type="button" class="primary" id="start">Start</button>
+          </div>
+          <p class="muted wrap" id="start-note"></p>
+        </div>
+      </section>
+
+      <!-- THE TERMINAL -->
+      <section id="term-view" class="hidden">
+        <div class="card">
+          <p><span class="pill live" id="state-pill">attaching</span> <span class="sid" id="sid"></span></p>
+          <p class="wrap" id="title"></p>
+          <div class="banner hidden" id="banner"></div>
+          <pre id="screen" tabindex="0" aria-label="Session output" aria-live="polite"></pre>
+          <div class="composer">
+            <input id="input" type="text" inputmode="text" autocapitalize="off" autocorrect="off"
+                   spellcheck="false" placeholder="Type an instruction, then Send" aria-label="Send to the agent" />
+            <button type="button" class="primary" id="send">Send</button>
+          </div>
+          <div class="row">
+            <!-- CRITERION 4. It sends Ctrl+C and NOTHING ELSE: no reconnect, no navigation, no
+                 confirmation dialog to dismiss one-handed. You stay exactly where you were. -->
+            <button type="button" id="interrupt">Interrupt (Ctrl+C)</button>
+            <button type="button" id="enter">Enter</button>
+            <button type="button" id="back">Back to sessions</button>
+            <button type="button" class="danger" id="kill">Kill session</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="term.js"></script>
+    <script src="session.js"></script>
+  </body>
+</html>

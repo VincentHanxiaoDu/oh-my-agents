@@ -153,10 +153,12 @@
       <section class="card" aria-labelledby="sess-h">
         <h2 id="sess-h" style="font-size: 1rem; margin: 0 0 0.5rem">Sessions</h2>
         <p id="sessions">&mdash;</p>
-        <p class="muted wrap">
-          Attaching to a session is Issue&nbsp;#2 and is not built yet. This host reports what it
-          owns, which right now is nothing.
-        </p>
+        <!-- ISSUE #2 added this link and nothing else on this page. Attaching lives on its own
+             page (session.html) rather than in this one, so that the two branches building from
+             this commit do not restructure the same file. -->
+        <div class="row">
+          <a class="btn" href="/session.html">Open sessions</a>
+        </div>
       </section>
 
       <details>
