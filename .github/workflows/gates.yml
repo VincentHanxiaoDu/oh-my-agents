@@ -1,0 +1,259 @@
+name: gates
+
+# Everything mechanical runs on the pull request. The review gate additionally listens to comments,
+# because a review ARRIVES as a comment and a pull_request event has already fired by then.
+#
+# ONE GITHUB CONSTRAINT WORTH KNOWING BEFORE IT SURPRISES YOU: `issue_comment` is not a
+# pull-request event, so GitHub runs it from the workflow file on the DEFAULT branch. Until this
+# file has reached the default branch, posting a review will not re-evaluate the gate by itself;
+# re-run the pull request's own run instead.
+
+# REQUIRED CONTEXTS — the exact strings branch protection must require. Declared here because a
+# job NAME and the context a job PUBLISHES are not the same string, and deriving the list from job
+# names got that wrong the moment one was renamed: `main` ended up protected on "Review gate ran",
+# which is green whenever the job executes, while the verdict it publishes was required by nothing.
+# A pull request merged with its review status red and the protection was working as configured.
+#
+# One line per context, exactly as it appears to GitHub. check-contexts.sh proves each one is
+# actually produced by this file.
+#
+# BEGIN REQUIRED CONTEXTS
+#   Branch name and commit convention
+#   Tasks complete
+#   Generated files not hand-authored
+#   Build and tests
+#   Reviewed by an agent that authored none of its commits
+# END REQUIRED CONTEXTS
+
+on:
+  # PUSH TO THE DEFAULT BRANCH TOO. Without it the gates only ever see pull-request heads, and a
+  # merge commit is a different commit with different parents — so a release is tagged on a sha CI
+  # has never, by construction, examined. Found when a release's own target reported three `skipped`
+  # runs, which nobody would notice without going to look.
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# NO `issue_comment` HERE, DELIBERATELY. It used to be, so a review arriving as a comment would
+# re-evaluate the review gate. But `issue_comment` runs from the DEFAULT BRANCH, and the four
+# mechanical jobs — conditioned out by their `if` — still filed themselves as **skipped check runs
+# against main's head sha**, dated after the real push run and superseding it. Main's gates then
+# read `skipped` whether the build had passed or failed. `review-recheck.yml` handles comments now,
+# by re-running this workflow's own pull_request run: one definition of the gate, and main's colours
+# stay main's.
+
+concurrency:
+  # THE EVENT NAME IS PART OF THE KEY. Without it a comment and a push share a group, so posting the
+  # comment the dev prompt REQUIRES cancelled that pull request's own in-flight `Build and tests` —
+  # a red caused by following the instructions, which no push clears. Recovery was `gh run rerun`,
+  # a command in no role's prompt.
+  group: gates-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number || github.sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  statuses: write
+  pull-requests: read
+  issues: read
+
+jobs:
+  # ── everything mechanical, on the pull request only ──────────────────────────
+  mechanical:
+    name: Branch name and commit convention
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # THE PULL REQUEST'S OWN HEAD, NOT THE SYNTHETIC MERGE COMMIT. On a `pull_request` event
+          # GitHub checks out `refs/pull/N/merge` by default — a commit it created, whose subject is
+          # `Merge <sha> into <sha>`. Measured on the first real run: this gate failed a 92-character
+          # subject nobody wrote. A gate judging an artefact of the CI system rather than the work is
+          # worse than no gate; it is red for a reason the author cannot act on.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # THE GATES READ A COMMIT RANGE, so they need the history. Without this they cannot
+          # compute the range and refuse — correctly, but on every run, for the wrong reason.
+          fetch-depth: 0
+
+      # A GATE THAT CANNOT BE SHOWN TO FAIL IS NOT A GATE, so the self-tests run first and their
+      # failure is the job's failure. Everything after this point is judged by a checker that has
+      # just demonstrated it can go red.
+      - name: Self-test every gate
+        run: |
+          set -euo pipefail
+          # SCOPED TO THE GATES THIS WORKFLOW RUNS. `check-prompts.sh` validates the agent
+          # command files, which are a LOCAL concern — the installer verifies them once, in the
+          # target, and nothing about a pull request can change them. Requiring them here would
+          # force a project to commit `.claude/` for a check that says nothing about its code.
+          for s in ./.workflow/bin/check-naming.sh ./.workflow/bin/check-tasks-complete.sh \
+                   ./.workflow/bin/check-generated.sh ./.workflow/bin/check-review.sh; do
+            [ -f "$s" ] || { echo "::error::$s is missing — the gates cannot run"; exit 1; }
+            bash "$s" --self-test >/dev/null || { echo "::error::$s cannot be shown to fail"; exit 1; }
+          done
+          echo "every gate's self-test passes"
+
+      - name: Branch name and commit convention
+        run: ./.workflow/bin/check-naming.sh "${{ github.head_ref || github.ref_name }}" "${{ github.event.pull_request.base.sha || github.event.before }}"
+
+  tasks:
+    name: Tasks complete
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: "${{ github.event.pull_request.head.sha || github.sha }}", fetch-depth: 0 }
+      # PASSES ON A PROJECT THAT DOES NOT USE OPENSPEC, and says so. A gate that blocks every pull
+      # request in a repository it does not apply to is worse than no gate: nothing merges, and the
+      # reason is invisible until someone reads a log.
+      - run: ./.workflow/bin/check-tasks-complete.sh "${{ github.event.pull_request.base.sha || github.event.before }}"
+
+  generated:
+    name: Generated files not hand-authored
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: "${{ github.event.pull_request.head.sha || github.sha }}", fetch-depth: 0 }
+      - run: ./.workflow/bin/check-generated.sh "${{ github.event.pull_request.base.sha || github.event.before }}"
+
+  build:
+    name: Build and tests
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: "${{ github.event.pull_request.head.sha || github.sha }}" }
+      # THE PROJECT'S OWN BUILD, IF IT HAS ONE. An absent Makefile target is not a failure — this
+      # framework installs into projects that have not been built yet — but it is SAID, so a green
+      # here is never mistaken for "the tests passed".
+      - name: Build and tests
+        run: |
+          set -euo pipefail
+          if [ -f Makefile ] && grep -qE '^ci:' Makefile; then
+            make ci
+            exit $?
+          fi
+          # A PROJECT WITH TESTS AND NO WAY TO RUN THEM MUST NOT BE GREEN HERE. Without this, a
+          # repository with no Makefile printed NOT APPLICABLE and went green having executed zero
+          # tests — and a dev agent shipped three test suites that never ran, behind three green
+          # checks. Its own words: the exact failure class the framework is built against, sitting
+          # in the framework.
+          if find . -path ./node_modules -prune -o \
+               \( -name '*_test.*' -o -name 'test_*' -o -name '*.test.*' -o -name '*.spec.*' \) -print 2>/dev/null | grep -q . \
+             || [ -d tests ] || [ -d test ] || [ -d spec ]; then
+            echo "::error::this project has tests and no 'ci' target to run them, so none of them ran."
+            echo "  Add a Makefile with a 'ci:' target that runs your suite. A green here would say"
+            echo "  the tests passed, and nothing would have executed them."
+            exit 1
+          fi
+          echo "NOT APPLICABLE: no tests found and no 'ci' target, so nothing was built or tested."
+          echo "This green means the gate did not apply. It does NOT mean tests passed."
+
+  # ── the review gate: both event paths, one commit status ─────────────────────
+  review:
+    # THE JOB NAME IS NOT THE VERDICT. A check run called "Reviewed by an agent that authored none
+    # of its commits" showing SUCCESS reads as an assertion that a review happened; it means only
+    # that the evaluation ran. A dev agent read exactly that and took two unreviewed pull requests
+    # as reviewed. The verdict lives in the commit status this job publishes, which carries the
+    # required-context name and is the thing branch protection reads.
+    name: Review gate ran (the verdict is a commit status)
+    # PULL REQUESTS ONLY. A comment reaches this job by re-running the whole run (review-recheck.yml),
+    # so the event that arrives here is always `pull_request` — the same shape whichever way it came.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - id: pr
+        name: Resolve the pull request this event belongs to
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          # READ FROM THE API ON BOTH PATHS rather than trusting the pull_request payload: the
+          # payload is a snapshot from when the event fired, and a review posted against a sha that
+          # has since been pushed over must be seen as stale.
+          gh api "repos/$REPO/pulls/$NUMBER" > pr.json
+          {
+            echo "head_sha=$(jq -r .head.sha pr.json)"
+            echo "base_sha=$(jq -r .base.sha pr.json)"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.pr.outputs.head_sha }}
+          fetch-depth: 0
+
+      - name: Self-test the checker
+        id: selftest
+        run: ./.workflow/bin/check-review.sh --self-test
+
+      - name: Require a review of this head sha
+        # `continue-on-error` KEEPS THE JOB GREEN WHILE THE STEP'S OUTCOME STAYS READABLE. Without
+        # it, a pull request awaiting review — the normal case — leaves a red check run on the head,
+        # and GitHub refuses to enable auto-merge on a pull request with any failing check run even
+        # when every required context is green. The verdict lives in the commit status below and
+        # nowhere else: one gate, one artefact.
+        continue-on-error: true
+        if: always()
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$REPO/issues/$NUMBER/comments" --jq '.[]|{body}' | jq -s '.' > comments.json
+          # The exit code is RECORDED, because the publishing step needs to tell a refusal (2) from
+          # an absence (1) and a step's outcome carries neither.
+          set +e
+          ./.workflow/bin/check-review.sh "${{ steps.pr.outputs.head_sha }}" comments.json "${{ steps.pr.outputs.base_sha }}"
+          rc=$?
+          set -e
+          echo "$rc" > review.rc
+          exit "$rc"
+
+      - name: Publish the verdict as a commit status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # A BROKEN CHECKER MUST NOT PUBLISH A PASS. The self-test runs before the check and its
+          # outcome is read here, so an unverified checker returning 0 holds rather than approves.
+          if [ "${{ steps.selftest.outcome }}" != "success" ]; then
+            state=pending
+            desc="the review checker failed its own self-test — nothing here says whether a review exists"
+          elif [ "${{ steps.check.outcome }}" = "success" ]; then
+            state=success; desc="Reviewed by an agent that did not build it"
+          elif [ "${{ steps.check.outcome }}" = "failure" ]; then
+            state=failure
+            # A REFUSED REVIEW AND AN ABSENT ONE ARE DIFFERENT FACTS, and they shared this string —
+            # so a reviewer that had just posted `changes-requested` could not tell its verdict had
+            # landed from its comment never being parsed. check-review.sh exits 2 for a parsed
+            # refusal and 1 for everything else, which is a fact the step recorded rather than a log
+            # line grepped for. The grep version did not work and shipped anyway.
+            if [ "$(cat review.rc 2>/dev/null || echo 1)" = "2" ]; then
+              desc="Changes requested by a reviewer — the review landed and refused this head"
+            else
+              desc="No current review by an independent agent — see the log"
+            fi
+          else
+            # ACCUSATION IS RESERVED FOR THE ONE OUTCOME THAT MEANS IT. `cancelled`, `skipped` and
+            # an empty string all land here and hold, rather than reporting that no review exists.
+            state=pending
+            desc="the review check did not complete (outcome: ${{ steps.check.outcome }})"
+          fi
+          gh api -X POST "repos/$REPO/statuses/${{ steps.pr.outputs.head_sha }}" \
+            -f state="$state" \
+            -f context="Reviewed by an agent that authored none of its commits" \
+            -f description="$desc" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >/dev/null
+          echo "published: $state — $desc"

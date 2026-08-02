@@ -1,0 +1,83 @@
+name: review recheck
+
+# A REVIEW ARRIVES AS A COMMENT, LONG AFTER THE PULL REQUEST EVENT HAS FIRED. Something has to make
+# the review gate look again, and this is it.
+#
+# WHY IT RE-RUNS THE PULL REQUEST'S OWN RUN INSTEAD OF EVALUATING THE GATE ITSELF. `issue_comment`
+# is not a pull-request event, so a job here would need its own copy of the review gate — and a
+# second copy of that logic is a second thing to keep in step with the first. This project has
+# already shipped a self-test that asserted a *copy* of the dispatcher rather than the dispatcher.
+# One definition, in gates.yml, re-executed from here.
+#
+# AND WHY gates.yml NO LONGER LISTENS TO `issue_comment` AT ALL. It used to, with every mechanical
+# job conditioned out by an `if`. A job conditioned out still files a **skipped check run** — and
+# because `issue_comment` runs from the default branch, those skipped runs landed on **main's head
+# sha**, timestamped after the real push run and superseding it. Main's five gates read `skipped`
+# whether the build had passed or failed: *could not see* wearing the colour of *nothing to see*, on
+# the one branch everybody starts from. This workflow files one check run under its own name, which
+# is not a required context and is not one of the five, so main's colours stay its own.
+
+on:
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: review-recheck-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  recheck:
+    name: Re-run the gates because a review arrived
+    if: github.event.issue.pull_request != null
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Re-run this pull request's gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          sha=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha)
+          echo "head sha: $sha"
+
+          # The pull_request run for THIS head sha. Not the newest run on the branch: a review is a
+          # verdict on one sha, and re-running a newer one would answer about work the reviewer
+          # never read.
+          run_id=$(gh api "repos/$REPO/actions/runs?event=pull_request&per_page=100" \
+                     --jq "[.workflow_runs[] | select(.head_sha==\"$sha\") | .id] | max // empty")
+
+          # NO RUN FOUND IS NOT "NOTHING TO DO". It means the verdict this comment carries will not
+          # reach the gate, and a reviewer who posted an approval would be waiting on a status that
+          # nobody is going to update. Fail, and say what to do instead.
+          if [ -z "$run_id" ]; then
+            echo "::error::no pull_request run exists for $sha, so this review cannot be re-evaluated." \
+                 "Push to the branch, or re-run the pull request's own gates run by hand."
+            exit 1
+          fi
+
+          # ONE JOB, NOT THE WHOLE RUN. Every verdict in this process arrives as a comment, so
+          # re-running the run would rebuild and re-test the branch once per comment — the review
+          # gate's answer bought at the price of the build's. Only the review job's answer can have
+          # changed, so only the review job re-runs.
+          job_id=$(gh api "repos/$REPO/actions/runs/$run_id/jobs" \
+                     --jq '[.jobs[] | select(.name | startswith("Review gate ran")) | .id] | max // empty')
+
+          # A NAME THAT NO LONGER MATCHES IS NOT AN ABSENT REVIEW GATE. If gates.yml renames the job
+          # and this is not updated, the silent outcome would be reviews that never re-evaluate —
+          # every pull request stuck behind a red status with no failure anywhere to explain it.
+          if [ -z "$job_id" ]; then
+            echo "::error::run $run_id has no job whose name starts with 'Review gate ran'." \
+                 "Either gates.yml renamed it and this workflow was not updated, or the job never ran." \
+                 "Jobs present: $(gh api "repos/$REPO/actions/runs/$run_id/jobs" --jq '[.jobs[].name] | join(", ")')"
+            exit 1
+          fi
+
+          echo "re-running review job $job_id of run $run_id"
+          gh api -X POST "repos/$REPO/actions/jobs/$job_id/rerun" >/dev/null
