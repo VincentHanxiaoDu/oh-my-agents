@@ -12,6 +12,8 @@ import { queryHost } from '../host/status.js';
 import { readHostRecord } from '../host/state.js';
 import { isProcessAlive, releaseLock } from '../host/lock.js';
 import { hostLogFile, hostStateFile } from '../paths.js';
+import { cmdAttach, cmdKill, cmdNew, cmdSessions } from './session-commands.js';
+import { runSupervisor } from '../sessions/supervisor.js';
 
 // FLAGS THAT WOULD ANSWER AN UNSETTLED PRODUCT DECISION. Issue #1 says explicitly that whether this
 // host installs itself so it returns after a REBOOT is not decided. Accepting any of these would
@@ -73,6 +75,11 @@ const USAGE = `oh-my-agents — serve this machine's coding agents over your own
   oh-my-agents start          the same thing, spelled out
   oh-my-agents status         is a host running here, where, and how many sessions
   oh-my-agents stop           stop the host running on this machine
+
+  oh-my-agents sessions       list this machine's sessions: live, ended, or undetermined
+  oh-my-agents new <cmd> ...  start an agent under a pseudo-terminal
+  oh-my-agents attach <id>    attach THIS TERMINAL to a session (Ctrl+] detaches, Ctrl+C interrupts)
+  oh-my-agents kill <id>      send SIGTERM to a session's agent
 
   --port <n>                  which port to serve on (default ${DEFAULT_PORT}, or $OMA_PORT)
 
@@ -199,6 +206,25 @@ export async function main(argv: string[]): Promise<number> {
       return cmdStatus();
     case 'stop':
       return cmdStop();
+    case 'sessions':
+      return cmdSessions();
+    case 'new':
+      return cmdNew(argv.slice(1));
+    case 'attach':
+      return cmdAttach(argv.slice(1));
+    case 'kill':
+      return cmdKill(argv.slice(1));
+    case '__session': {
+      // The body of ONE SESSION'S SUPERVISOR. Spawned detached by the host; it outlives the host by
+      // design, which is criterion 6. Never run by a person, hence the reserved name.
+      const i = argv.indexOf('--id');
+      const id = i === -1 ? undefined : argv[i + 1];
+      if (id === undefined) {
+        process.stderr.write('__session needs --id <session-id>\n');
+        return EXIT.ERROR;
+      }
+      return runSupervisor({ id, env: process.env });
+    }
     case '__daemon': {
       const port = parsePort(argv);
       if (typeof port !== 'number') {

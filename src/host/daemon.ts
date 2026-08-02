@@ -27,7 +27,7 @@ import { resolveBind } from './bind.js';
 import { renderBanner } from './banner.js';
 import { readHostRecord, writeHostRecord, type HostRecord } from './state.js';
 import { startServer } from '../server/server.js';
-import { createEmptyRegistry } from '../sessions/registry.js';
+import { createPtyRegistry } from '../sessions/registry.js';
 import { writeFileSync } from 'node:fs';
 
 export const DEFAULT_PORT = 8787;
@@ -150,9 +150,12 @@ export async function runDaemon(opts: { port: number; env?: PathEnv & NodeJS.Pro
   const status = await (opts.detect ? opts.detect() : detectTailnet());
   const plan = resolveBind(status);
 
-  const registry = createEmptyRegistry();
+  // ISSUE #2: a real, PTY-backed registry. It is a READER OF THE STATE DIRECTORY, not a map, so
+  // this line is also how a restarted host finds the sessions the previous one started — they are
+  // detached supervisor processes that never noticed the host go away (criterion 6).
+  const registry = createPtyRegistry(env);
   const startedAt = new Date().toISOString();
-  const server = await startServer({ plan, port: opts.port, registry, startedAt });
+  const server = await startServer({ plan, port: opts.port, registry, sessions: registry, startedAt });
 
   const record: HostRecord = {
     schema: 1,
