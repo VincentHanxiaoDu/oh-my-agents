@@ -84,7 +84,13 @@ failure, restoring it, and observing the pass — not by reading the test.
 - [x] No interactive element styled below 44px; every interactive element covered by a rule at or above it
 - [x] Nothing requires hover, right-click or drag; the revoke control's confirm step is the same size as the first tap
 - [x] Long content wraps or scrolls in its own box rather than scrolling the page sideways
-- [ ] Measured in a real browser at 375×812 — NOT DONE HERE; see the pull request body for why
+
+> **Trimmed, not done.** Measuring the two new pages in a real browser at 375×812 — as Issue #1 did
+> for `index.html` — is NOT on this list because it was not possible in this environment: a
+> concurrent agent held the only Chrome profile available here for the whole of this build, and the
+> MCP browser refuses a second instance against a profile in use. What ships is the source-decidable
+> half, which is what the tests cover. The pull request body names this as unverified so a reviewer
+> can measure it rather than assume it was measured.
 
 ## The open decision, refused rather than answered
 
