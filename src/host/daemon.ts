@@ -28,6 +28,7 @@ import { renderBanner } from './banner.js';
 import { readHostRecord, writeHostRecord, type HostRecord } from './state.js';
 import { startServer } from '../server/server.js';
 import { createEmptyRegistry } from '../sessions/registry.js';
+import { ensureStore } from '../pairing/store.js';
 import { writeFileSync } from 'node:fs';
 
 export const DEFAULT_PORT = 8787;
@@ -150,9 +151,25 @@ export async function runDaemon(opts: { port: number; env?: PathEnv & NodeJS.Pro
   const status = await (opts.detect ? opts.detect() : detectTailnet());
   const plan = resolveBind(status);
 
+  // ISSUE #5: this host owns a mesh key from the moment it starts, whether or not anyone has ever
+  // paired. An empty store grants nothing; not having one would leave `status` unable to identify
+  // itself as this machine's operator on a host nobody has paired with yet.
+  const ensured = ensureStore(env);
+  if (ensured.kind === 'undetermined') {
+    // Loud, and NOT fatal: the host still starts and still serves the pairing prompt. What it does
+    // NOT do is grant anything — `authenticate` reads the same store and returns `undetermined`,
+    // which denies. Exiting here would take a working host down over a file a user can delete.
+    process.stderr.write(
+      `WARNING: this host could not establish its pairing store: ${ensured.reason}\n` +
+        `It will deny every request until that is fixed. It is NOT serving anything unauthenticated.\n`,
+    );
+  }
+
   const registry = createEmptyRegistry();
   const startedAt = new Date().toISOString();
-  const server = await startServer({ plan, port: opts.port, registry, startedAt });
+  // `env` is threaded through so the pairing store the server reads is the same one the CLI's
+  // `pair` / `devices` / `revoke` commands write, including under OMA_STATE_DIR in the tests.
+  const server = await startServer({ plan, port: opts.port, registry, startedAt, env });
 
   const record: HostRecord = {
     schema: 1,

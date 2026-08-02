@@ -14,6 +14,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { OPERATOR_HEADER, operatorProof } from '../src/pairing/operator.js';
 
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cli', 'main.js');
 
@@ -51,9 +52,17 @@ function freePort(): Promise<number> {
   });
 }
 
-function get(host: string, port: number, p: string, timeoutMs = 4000): Promise<{ status: number; body: string }> {
+function get(
+  host: string,
+  port: number,
+  p: string,
+  // ISSUE #5 put every route behind pairing, so who is asking now changes the answer. Callers say
+  // so explicitly rather than this helper picking an identity for them.
+  headers: Record<string, string> = {},
+  timeoutMs = 4000,
+): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const req = http.request({ host, port, path: p, timeout: timeoutMs }, (res) => {
+    const req = http.request({ host, port, path: p, timeout: timeoutMs, headers }, (res) => {
       const chunks: Buffer[] = [];
       res.on('data', (c: Buffer) => chunks.push(c));
       res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
@@ -103,11 +112,27 @@ test('the whole lifecycle: one command starts it, it serves, status agrees, stop
   const shownPort = Number(printed![2]);
   assert.equal(shownPort, port);
 
-  const page = await get(shownHost, shownPort, '/');
+  // ISSUE #5 CHANGED WHAT AN UNPAIRED CALLER SEES HERE, AND THAT IS THE POINT OF ISSUE #5.
+  // Issue #1 asserted that this address served the real page to anyone who could reach it. Its
+  // criterion 2 — "the printed address is the one that works" — is still asserted: the address
+  // still answers, on the tailnet, with a page. It is now the PAIRING PROMPT, because criterion 1
+  // of Issue #5 says a browser that has never paired is shown a prompt instead of any agent data.
+  const page = await get(shownHost, shownPort, '/', { Accept: 'text/html' });
   assert.equal(page.status, 200);
-  assert.match(page.body, /<title>oh-my-agents<\/title>/);
+  assert.match(page.body, /<title>Pair this device<\/title>/);
+  assert.ok(!/sessionCount|<title>oh-my-agents</.test(page.body), 'the unpaired page leaked host data');
 
-  const api = await get('127.0.0.1', port, '/api/status');
+  // And the same address tells a non-browser caller nothing at all.
+  const anonymous = await get(shownHost, shownPort, '/api/status');
+  assert.equal(anonymous.status, 404, 'an unpaired caller was served the status payload');
+
+  // The operator — a process on this machine that can read the pairing store — still gets it. This
+  // is what `oh-my-agents status` uses; see src/pairing/operator.ts.
+  const proof = operatorProof({ OMA_STATE_DIR: dir });
+  assert.equal(proof.kind, 'ok', 'the operator proof could not be computed');
+  const api = await get('127.0.0.1', port, '/api/status', {
+    [OPERATOR_HEADER]: proof.kind === 'ok' ? proof.proof : '',
+  });
   assert.equal(api.status, 200);
   const body = JSON.parse(api.body) as Record<string, unknown>;
   assert.equal(body.sessionCount, 0);

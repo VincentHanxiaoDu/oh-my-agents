@@ -16,6 +16,7 @@ import http from 'node:http';
 import { isProcessAlive } from './lock.js';
 import { readHostRecord, type HostRecord } from './state.js';
 import type { PathEnv } from '../paths.js';
+import { OPERATOR_HEADER, operatorProof } from '../pairing/operator.js';
 
 export interface LiveStatus {
   sessionCount: number;
@@ -48,7 +49,13 @@ export async function queryHost(opts: QueryOptions = {}): Promise<StatusReport> 
     };
   }
 
-  const probed = await probe(record, opts.timeoutMs ?? 3000);
+  // ISSUE #5: every route is behind pairing now, so the probe must say who it is. It authenticates
+  // as THIS MACHINE'S OPERATOR, by proving it can read the pairing store — see
+  // src/pairing/operator.ts. If it cannot compute the proof it probes anyway and gets whatever the
+  // host gives an unknown caller, which lands as `undetermined` below. That is the correct answer:
+  // a status command that cannot identify itself has not established that a host is running.
+  const proof = operatorProof(env);
+  const probed = await probe(record, opts.timeoutMs ?? 3000, proof.kind === 'ok' ? proof.proof : undefined);
   if (probed.kind === 'error') {
     return {
       kind: 'undetermined',
@@ -61,19 +68,32 @@ export async function queryHost(opts: QueryOptions = {}): Promise<StatusReport> 
 
 type ProbeOutcome = { kind: 'ok'; live: LiveStatus } | { kind: 'error'; reason: string };
 
-function probe(record: HostRecord, timeoutMs: number): Promise<ProbeOutcome> {
+function probe(record: HostRecord, timeoutMs: number, operator: string | undefined): Promise<ProbeOutcome> {
   // Always over loopback: a status command asking about THIS machine's host must not depend on the
   // tailnet being up, or `status` would go undetermined every time Tailscale hiccuped.
   const host = record.addresses.find((a) => a === '127.0.0.1') ?? '127.0.0.1';
   return new Promise((resolve) => {
     const req = http.request(
-      { host, port: record.port, path: '/api/status', method: 'GET', timeout: timeoutMs },
+      {
+        host,
+        port: record.port,
+        path: '/api/status',
+        method: 'GET',
+        timeout: timeoutMs,
+        headers: operator === undefined ? {} : { [OPERATOR_HEADER]: operator },
+      },
       (res) => {
         const chunks: Buffer[] = [];
         res.on('data', (c: Buffer) => chunks.push(c));
         res.on('end', () => {
           if (res.statusCode !== 200) {
-            resolve({ kind: 'error', reason: `it answered HTTP ${res.statusCode}` });
+            resolve({
+              kind: 'error',
+              reason:
+                res.statusCode === 404
+                  ? 'it did not recognise this command as this machine\u2019s operator (is the pairing store readable?)'
+                  : `it answered HTTP ${res.statusCode}`,
+            });
             return;
           }
           try {

@@ -17,6 +17,14 @@ export const EXIT = {
   UNDETERMINED: 5,
   /** An unsettled product decision was asked for. Refused loudly rather than answered. */
   REFUSED_UNSETTLED_DECISION: 6,
+  /**
+   * We looked, and the thing you named is not there (Issue #5: no such paired device).
+   *
+   * Distinct from 4, which is specifically "no host is running here", and distinct from 5, which
+   * is "could not tell". A script revoking a device needs "that device is gone already" and "I
+   * could not read the pairing store" to be different answers, for the same reason `status` does.
+   */
+  NO_SUCH_THING: 7,
 } as const;
 
 export type ExitCode = (typeof EXIT)[keyof typeof EXIT];
