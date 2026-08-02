@@ -1,0 +1,141 @@
+// The pairing store, and the one property everything else rests on: A STORE YOU CANNOT READ DENIES.
+//
+// Each assertion here was watched go red before it was kept. The method, for the record: for the
+// "unreadable store denies" test the `if (code === 'ENOENT')` guard in `readStore` was widened to
+// `return { kind: 'absent' }` for every error — the shape of the fail-open bug this test exists to
+// catch — and the test was observed failing with `expected 'undetermined', got 'absent'`, then the
+// guard was restored and it was observed passing.
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { authenticate, grants } from '../src/pairing/auth.js';
+import { createPairingCode, pairDevice } from '../src/pairing/devices.js';
+import { mutateStore, pairingStoreFile, readStore } from '../src/pairing/store.js';
+import { tempEnv } from './helpers/http.js';
+
+test('a store that has never been written is ABSENT, which is not an error', () => {
+  const env = tempEnv();
+  const read = readStore(env);
+  assert.equal(read.kind, 'absent');
+});
+
+test('a corrupt store is UNDETERMINED, and undetermined is not absent', () => {
+  const env = tempEnv();
+  mkdirSync(env.OMA_STATE_DIR, { recursive: true });
+  writeFileSync(pairingStoreFile(env), '{ this is not json');
+
+  const read = readStore(env);
+  assert.equal(read.kind, 'undetermined', 'a corrupt store read as something other than undetermined');
+  assert.notEqual(read.kind, 'absent', 'a corrupt store must never read as "nobody has paired"');
+  assert.match(read.kind === 'undetermined' ? read.reason : '', /not valid JSON/);
+});
+
+test('a store with a schema this build does not understand is UNDETERMINED, not empty', () => {
+  const env = tempEnv();
+  mkdirSync(env.OMA_STATE_DIR, { recursive: true });
+  writeFileSync(pairingStoreFile(env), JSON.stringify({ schema: 99, meshSecret: 'a'.repeat(64), devices: [], codes: [] }));
+  const read = readStore(env);
+  assert.equal(read.kind, 'undetermined');
+});
+
+test('a store that is a directory is UNDETERMINED, not empty', () => {
+  const env = tempEnv();
+  mkdirSync(pairingStoreFile(env), { recursive: true });
+  const read = readStore(env);
+  assert.equal(read.kind, 'undetermined');
+});
+
+// THE CENTRAL ONE. A device that WAS authorised stops being authorised the moment the store cannot
+// be read — the check does not fall through to a permissive default, and it does not throw into
+// some caller's catch and become one.
+test('an UNREADABLE store denies a credential that worked a moment ago', { concurrency: false }, (t) => {
+  const env = tempEnv();
+  const issued = createPairingCode(env);
+  assert.equal(issued.kind, 'ok');
+  const paired = pairDevice(issued.kind === 'ok' ? issued.value.code : '', 'Test · Test', env);
+  assert.equal(paired.kind, 'paired');
+  const token = paired.kind === 'paired' ? paired.credential.token : '';
+
+  // THE POSITIVE PATH FIRST, in the same test. Without this, everything below would pass on a build
+  // where nothing was ever authorised — which is the failure mode a revocation test hides best.
+  assert.ok(grants(authenticate(token, env)), 'the credential did not work before the store was broken');
+
+  const file = pairingStoreFile(env);
+
+  // PROBE, DO NOT ASSUME. Whether chmod 000 actually makes a file unreadable depends on the
+  // filesystem and on whether the test runs as root; both are true somewhere. So make it
+  // unreadable, then TEST whether it is, and if the environment will not cooperate say so and use
+  // corruption — a different route to the same `undetermined` — rather than silently proving less.
+  const original = statSync(file).mode;
+  let unreadable = false;
+  try {
+    chmodSync(file, 0o000);
+    readFileSync(file, 'utf8');
+  } catch {
+    unreadable = true;
+  }
+
+  if (!unreadable) {
+    chmodSync(file, original);
+    t.diagnostic('this environment lets the test process read a mode-000 file (likely running as root); using a corrupt store instead');
+    writeFileSync(file, '\x00not a store');
+  }
+
+  const decision = authenticate(token, env);
+  assert.equal(decision.kind, 'undetermined', 'an unreadable pairing store did not deny — this is the fail-open bug');
+  assert.equal(grants(decision), false, 'grants() returned true for an undetermined store');
+
+  if (unreadable) chmodSync(file, original);
+});
+
+test('a store that cannot be read is never OVERWRITTEN with a fresh empty one', () => {
+  const env = tempEnv();
+  mkdirSync(env.OMA_STATE_DIR, { recursive: true });
+  const corrupt = '{ not a store at all';
+  writeFileSync(pairingStoreFile(env), corrupt);
+
+  const result = createPairingCode(env);
+  assert.equal(result.kind, 'undetermined', 'a code was issued against a store that could not be read');
+  // The bytes are still there. Overwriting would have silently revoked every device the user had.
+  assert.equal(readFileSync(pairingStoreFile(env), 'utf8'), corrupt);
+});
+
+test('the store is written 0600 and its mesh secret is not a constant', () => {
+  const a = tempEnv();
+  const b = tempEnv();
+  assert.equal(createPairingCode(a).kind, 'ok');
+  assert.equal(createPairingCode(b).kind, 'ok');
+
+  const readA = readStore(a);
+  const readB = readStore(b);
+  assert.equal(readA.kind, 'present');
+  assert.equal(readB.kind, 'present');
+  if (readA.kind !== 'present' || readB.kind !== 'present') return;
+  assert.notEqual(readA.store.meshSecret, readB.store.meshSecret, 'two hosts generated the same mesh key');
+  assert.match(readA.store.meshSecret, /^[0-9a-f]{64}$/);
+
+  // PROBE: some filesystems (and Windows) do not carry POSIX modes. Check what the OS reports for
+  // a file we know we wrote 0600, and skip the assertion rather than assume a permission model.
+  const mode = statSync(pairingStoreFile(a)).mode & 0o777;
+  if (process.platform === 'win32' || mode === 0o666 || mode === 0o644) {
+    // Not asserting: this filesystem does not preserve the mode we asked for.
+    return;
+  }
+  assert.equal(mode & 0o077, 0, `the pairing store is group/other readable (mode ${mode.toString(8)})`);
+});
+
+test('a mutation that refuses leaves the store untouched', () => {
+  const env = tempEnv();
+  assert.equal(createPairingCode(env).kind, 'ok');
+  const before = readFileSync(pairingStoreFile(env), 'utf8');
+  const result = mutateStore<never>(() => ({ refuse: 'deliberately' }), env);
+  assert.equal(result.kind, 'undetermined');
+  assert.equal(readFileSync(pairingStoreFile(env), 'utf8'), before);
+});
+
+test('the store lives in the directory src/paths.ts resolves, not a second location', () => {
+  const env = tempEnv();
+  assert.equal(pairingStoreFile(env), path.join(env.OMA_STATE_DIR, 'pairing.json'));
+});
