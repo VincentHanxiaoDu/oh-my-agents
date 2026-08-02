@@ -10,10 +10,16 @@ import { EXIT } from './exit-codes.js';
 import { DEFAULT_PORT, runDaemon, startDetached } from '../host/daemon.js';
 import { queryHost } from '../host/status.js';
 import { readHostRecord } from '../host/state.js';
+import { bracketIfV6 } from '../mesh/address.js';
 import { isProcessAlive, releaseLock } from '../host/lock.js';
 import { hostLogFile, hostStateFile } from '../paths.js';
 import { createPairingCode, listDevices, revokeDevice } from '../pairing/devices.js';
 import { CODE_TTL_MS, formatCode } from '../pairing/codes.js';
+import { forgetPeer, joinPeer, readPeers } from '../mesh/peers.js';
+import { ensureMachineIdentity } from '../mesh/identity.js';
+import { meshCredentialSupplier } from '../mesh/trust.js';
+import { aggregate } from '../mesh/aggregate.js';
+import { createEmptyRegistry } from '../sessions/registry.js';
 
 // FLAGS THAT WOULD ANSWER AN UNSETTLED PRODUCT DECISION. Issue #1 says explicitly that whether this
 // host installs itself so it returns after a REBOOT is not decided. Accepting any of these would
@@ -102,6 +108,63 @@ function refuseUnsettledCredentialExpiry(argv: string[]): number | null {
   return EXIT.REFUSED_UNSETTLED_DECISION;
 }
 
+// FLAGS THAT WOULD ANSWER ISSUE #3's TWO OPEN DECISIONS — the same pattern again, for the two
+// questions this Issue is blocked on and deliberately does not settle:
+//
+//   1. HOW A PEER IS TRUSTED WHEN JOINED. Whether hosts share one mesh key, or each holds its own
+//      and hosts authenticate to each other and vouch for devices. Every flag in the first group
+//      below would pick one, and the first of them — "just put the same key on every host" — is
+//      one line and would have made this Issue's criteria demonstrable today. It is refused because
+//      it makes one key the authority for every machine a person owns, which is a different
+//      security model from the one Issue #5 shipped.
+//   2. HOW A REVOCATION REACHES A PEER. `verifyForeignCredential` proves a credential is AUTHENTIC,
+//      not that it is still AUTHORISED — only the issuing host's store knows a device was revoked.
+//      Push, pull and proxy-the-check-to-the-issuer all work and fail differently. Until one is
+//      chosen this build never accepts a foreign device credential at all, which is the closed
+//      failure; a flag that turned it on would be the open one.
+const UNSETTLED_PEER_TRUST_FLAGS = [
+  '--share-mesh-key',
+  '--shared-mesh-key',
+  '--mesh-key',
+  '--mesh-secret',
+  '--shared-secret',
+  '--peer-token',
+  '--peer-key',
+  '--trust-peer',
+  '--trust-on-join',
+  '--auto-trust',
+  '--insecure-trust-peers',
+  '--accept-foreign-credentials',
+  '--propagate-revocations',
+  '--sync-devices',
+  '--sync-pairings',
+  '--revocation-push',
+];
+
+function refuseUnsettledPeerTrust(argv: string[]): number | null {
+  const found = argv.filter((a) => UNSETTLED_PEER_TRUST_FLAGS.includes(a.split('=')[0]!));
+  if (found.length === 0) return null;
+  process.stderr.write(
+    [
+      `REFUSING: ${found.join(', ')} would decide how hosts trust each other.`,
+      '',
+      'HOW A PEER IS TRUSTED WHEN JOINED is an OPEN PRODUCT DECISION on Issue #3, recorded there',
+      'under "Blocked on a decision", and HOW A REVOCATION REACHES A PEER is the second half of it.',
+      'They are one decision with two halves and neither is a dev branch\'s to make.',
+      '',
+      'What this build does instead: every device is authenticated by the host it opened, against',
+      'that host\'s own pairing store, on every request. No host ever accepts a device credential',
+      'issued by another host, so there is no path on which a revoked phone is served by a peer.',
+      'That is the CLOSED failure and it is the right one — it costs a working joined mesh today,',
+      'and the alternative costs a revocation that does not take effect.',
+      '',
+      'Take it to Issue #3. See src/mesh/trust.ts and src/pairing/mesh.ts.',
+      '',
+    ].join('\n'),
+  );
+  return EXIT.REFUSED_UNSETTLED_DECISION;
+}
+
 function parsePort(argv: string[]): number | { error: string } {
   const i = argv.indexOf('--port');
   let raw: string | undefined;
@@ -128,6 +191,14 @@ const USAGE = `oh-my-agents — serve this machine's coding agents over your own
   oh-my-agents pair           print a one-time pairing code for a new browser
   oh-my-agents devices        list the browsers that are paired with this host
   oh-my-agents revoke <id>    revoke one device, by id or by an unambiguous prefix
+
+  oh-my-agents join <addr>    join another host, by the address it printed when it started
+  oh-my-agents peers          list the hosts joined to this one
+  oh-my-agents forget <addr>  stop asking a host
+  oh-my-agents agents         every agent on every joined machine, labelled with its machine
+  oh-my-agents agents --host <addr> [--host <addr>]
+                              the same unified list from an EXPLICIT list of hosts, which do not
+                              have to have been joined to each other
 
   --port <n>                  which port to serve on (default ${DEFAULT_PORT}, or $OMA_PORT)
 
@@ -361,11 +432,211 @@ function cmdRevoke(argv: string[]): number {
   }
 }
 
+/** Criteria 1 and 6: join a host by address, and say plainly when it was already joined. */
+function cmdJoin(argv: string[]): number {
+  const address = argv[1];
+  if (address === undefined || address.startsWith('-')) {
+    process.stderr.write('usage: oh-my-agents join <address>\nThe address is the one the other host printed when it started.\n');
+    return EXIT.ERROR;
+  }
+  const outcome = joinPeer(address, process.env, selfForJoin());
+  switch (outcome.kind) {
+    case 'joined':
+      process.stdout.write(
+        [
+          `Joined ${outcome.peer.address}.`,
+          '',
+          'A JOIN IS PER-MACHINE AND THAT IS WHAT MAKES IT SYMMETRIC: this host now asks that one',
+          'directly, with no hub in between. Run the same command over there, pointed back here, and',
+          'each will list the other\'s agents. Stopping either one leaves the rest unaffected.',
+          '',
+        ].join('\n'),
+      );
+      return EXIT.OK;
+    case 'already-joined':
+      // CRITERION 6, and exit 0: asking for a state that already holds is not a failure, and it
+      // added nothing. The `matchedBy` says which key caught it — the address as typed, or the
+      // identity learned the last time that machine answered.
+      process.stdout.write(
+        `${outcome.peer.address} was already joined (matched by ${outcome.matchedBy}). Nothing was added.\n`,
+      );
+      return EXIT.OK;
+    case 'refused-self':
+      process.stderr.write(`${outcome.reason}\n`);
+      return EXIT.ERROR;
+    case 'invalid':
+      process.stderr.write(`${outcome.reason}\nNothing has been joined.\n`);
+      return EXIT.ERROR;
+    case 'undetermined':
+      process.stderr.write(
+        [
+          'COULD NOT DETERMINE which hosts are already joined, so NOTHING has been joined.',
+          `  ${outcome.reason}`,
+          '  This is NOT the same as no hosts being joined. Joining on the strength of this could',
+          '  add a machine that is already there.',
+          '',
+        ].join('\n'),
+      );
+      return EXIT.UNDETERMINED;
+  }
+}
+
+function selfForJoin(): { self?: { hostId: string; addresses: string[]; port: number } } {
+  const identity = ensureMachineIdentity();
+  const id = identity.kind === 'ok' ? identity.identity.hostId : identity.fallback.hostId;
+  return { self: { hostId: id, addresses: ['127.0.0.1', '::1', 'localhost'], port: DEFAULT_PORT } };
+}
+
+function cmdForget(argv: string[]): number {
+  const address = argv[1];
+  if (address === undefined || address.startsWith('-')) {
+    process.stderr.write('usage: oh-my-agents forget <address|host-id>\n');
+    return EXIT.ERROR;
+  }
+  const outcome = forgetPeer(address);
+  switch (outcome.kind) {
+    case 'forgotten':
+      process.stdout.write(`Forgot ${outcome.peer.address}. That machine keeps running and keeps its own joins.\n`);
+      return EXIT.OK;
+    case 'no-such-peer':
+      process.stderr.write(`${outcome.reason}\n`);
+      return EXIT.NO_SUCH_THING;
+    case 'invalid':
+      process.stderr.write(`${outcome.reason}\n`);
+      return EXIT.ERROR;
+    case 'undetermined':
+      process.stderr.write(`COULD NOT DETERMINE which hosts are joined. NOTHING has been forgotten.\n  ${outcome.reason}\n`);
+      return EXIT.UNDETERMINED;
+  }
+}
+
+function cmdPeers(): number {
+  const read = readPeers();
+  if (read.kind === 'undetermined') {
+    process.stderr.write(
+      [
+        'COULD NOT DETERMINE which hosts are joined to this one.',
+        `  ${read.reason}`,
+        '  This is NOT the same as no hosts being joined. Do not re-join on the strength of it.',
+        '',
+      ].join('\n'),
+    );
+    return EXIT.UNDETERMINED;
+  }
+  const peers = read.kind === 'present' ? read.peers : [];
+  if (peers.length === 0) {
+    process.stdout.write('No other host is joined to this one. Add one with: oh-my-agents join <address>\n');
+    return EXIT.OK;
+  }
+  process.stdout.write(
+    [
+      `${peers.length} host${peers.length === 1 ? '' : 's'} joined to this one.`,
+      '',
+      ...peers.map((p) =>
+        [
+          `  ${p.address}${p.machine ? `  (${p.machine})` : '  (has not answered yet — its name is unknown)'}`,
+          `      joined ${p.joinedAt}${p.lastSeenAt ? `, last answered ${p.lastSeenAt}` : ', never answered'}`,
+          '',
+        ].join('\n'),
+      ),
+      'Run `oh-my-agents agents` to see what is running on all of them.',
+      '',
+    ].join('\n'),
+  );
+  return EXIT.OK;
+}
+
+/**
+ * Criteria 1, 4, 5 and 7: the unified list, from the command line.
+ *
+ * With no `--host`, the joined hosts are asked. With one or more `--host`, THOSE are asked and the
+ * join records are not consulted at all — that is criterion 7, and it goes through exactly the same
+ * assembly as the joined path so the unreachable rendering and the disambiguation cannot drift.
+ */
+async function cmdAgents(argv: string[]): Promise<number> {
+  const explicit: string[] = [];
+  for (let i = 1; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === '--host') {
+      const next = argv[i + 1];
+      if (next === undefined) {
+        process.stderr.write('--host needs an address.\n');
+        return EXIT.ERROR;
+      }
+      explicit.push(next);
+      i++;
+    } else if (arg.startsWith('--host=')) {
+      explicit.push(arg.slice('--host='.length));
+    }
+  }
+
+  const identity = ensureMachineIdentity();
+  // The address this machine actually serves on, read from the record a running host publishes —
+  // NOT the default port. Printing `127.0.0.1:8787` beside a host serving on 18801 is the kind of
+  // small lie that sends someone to join the wrong address.
+  const record = await readHostRecord();
+  const selfAddress =
+    record.kind === 'present'
+      ? `${bracketIfV6(record.record.tailnetAddresses[0] ?? record.record.addresses[0] ?? '127.0.0.1')}:${record.record.port}`
+      : `127.0.0.1:${DEFAULT_PORT}`;
+  const view = await aggregate({
+    self: {
+      identity: identity.kind === 'ok' ? identity.identity : identity.fallback,
+      address: selfAddress,
+      registry: createEmptyRegistry(),
+    },
+    supplier: meshCredentialSupplier(),
+    ...(explicit.length > 0 ? { addresses: explicit, includeSelf: false } : {}),
+  });
+
+  const lines: string[] = [];
+  if (view.peersUndetermined !== null) {
+    lines.push('COULD NOT READ which hosts are joined, so this list may be missing some:', `  ${view.peersUndetermined}`, '');
+  }
+  for (const host of view.hosts) {
+    const name = host.machine + (host.self ? ' (this machine)' : '');
+    switch (host.agents.kind) {
+      case 'listed':
+            lines.push(
+          `${name}  [${host.agents.agents.length === 0 ? 'no agents' : host.agents.agents.length === 1 ? '1 agent' : `${host.agents.agents.length} agents`}]  ${host.address}`,
+        );
+        for (const a of host.agents.agents) lines.push(`    ${a.title}  on ${host.machine}${a.alive ? '' : '  (not running)'}`);
+        break;
+      case 'unreachable':
+        // NAMED, and NOT shown as empty. Criterion 4, at the command line.
+        lines.push(`${name}  [UNREACHABLE]  ${host.address}`, `    ${host.agents.reason}`, '    What it is running is UNKNOWN — this is not the same as it having no agents.');
+        break;
+      case 'not-trusted':
+        lines.push(`${name}  [NOT TRUSTED YET]  ${host.address}`, `    ${host.agents.reason}`, '    What it is running is UNKNOWN — this is not the same as it having no agents.');
+        break;
+      case 'undetermined':
+        lines.push(`${name}  [UNDETERMINED]  ${host.address}`, `    ${host.agents.reason}`);
+        break;
+    }
+    lines.push('');
+  }
+  const s = view.summary;
+  const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+  lines.push(
+    s.unknownMachines === 0
+      ? `${plural(s.agents, 'agent', 'agents')} on ${plural(s.machines, 'machine', 'machines')}.`
+      : `${plural(s.agents, 'agent', 'agents')} on ${plural(s.reachedMachines, 'machine', 'machines')}. ` +
+        `${plural(s.unknownMachines, 'machine', 'machines')} could not be listed — unknown, not none.`,
+    '',
+  );
+  process.stdout.write(lines.join('\n'));
+  // Exit 5 when any machine's agents could not be determined, for the same reason `status` uses it:
+  // a script must be able to tell "this is the whole list" from "this is the part I could get".
+  return s.unknownMachines === 0 ? EXIT.OK : EXIT.UNDETERMINED;
+}
+
 export async function main(argv: string[]): Promise<number> {
   const refusal = refuseUnsettledPersistence(argv);
   if (refusal !== null) return refusal;
   const expiryRefusal = refuseUnsettledCredentialExpiry(argv);
   if (expiryRefusal !== null) return expiryRefusal;
+  const trustRefusal = refuseUnsettledPeerTrust(argv);
+  if (trustRefusal !== null) return trustRefusal;
 
   // The command is the FIRST argument, or `start` when there is none — `oh-my-agents` on its own is
   // the single command of criterion 1. Scanning for the first non-flag instead would take the `9000`
@@ -386,6 +657,14 @@ export async function main(argv: string[]): Promise<number> {
       return cmdDevices();
     case 'revoke':
       return cmdRevoke(argv);
+    case 'join':
+      return cmdJoin(argv);
+    case 'peers':
+      return cmdPeers();
+    case 'forget':
+      return cmdForget(argv);
+    case 'agents':
+      return cmdAgents(argv);
     case '__daemon': {
       const port = parsePort(argv);
       if (typeof port !== 'number') {
