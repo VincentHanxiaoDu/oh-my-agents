@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- CRITERION 8. This page is the only human-facing surface Issue #1 serves in a browser, and
+         the criterion is a hard constraint on it: usable one-handed at 375px, no horizontal page
+         scroll, no interactive target under 44px, nothing needing hover, right-click or drag.
+         `width=device-width` is what makes 375px mean 375px rather than a scaled-down 980. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <!-- Inline data URI, so the page stays self-contained and the host serves no second file. A
+         missing favicon is a 404 in every visitor's console, which is noise a later Issue would
+         spend time on. -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%231c5fd0'/%3E%3Cpath d='M4 6l2.5 2L4 10M8.5 10.5h3.5' stroke='white' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+    <title>oh-my-agents</title>
+    <style>
+      /* No build step: this is the stylesheet, inline, served as-is (Issue #4 criterion 1). */
+      :root {
+        --bg: #ffffff;
+        --fg: #16181d;
+        --muted: #5b6270;
+        --line: #d9dde5;
+        --card: #f6f7f9;
+        --accent: #1c5fd0;
+        --ok: #0d7a4a;
+        --warn: #8a5a00;
+        /* 44px is the criterion. It is a variable so it cannot drift apart across rules. */
+        --tap: 44px;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #101216;
+          --fg: #e9ecf1;
+          --muted: #9aa3b2;
+          --line: #2a2f38;
+          --card: #181b21;
+          --accent: #6fa4ff;
+          --ok: #4cc38a;
+          --warn: #e0a33a;
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+        /* NO HORIZONTAL PAGE SCROLL, asserted here and enforced per-element below. This alone would
+           only HIDE an overflow; the min-width:0 and overflow-wrap rules below stop one happening. */
+        overflow-x: hidden;
+        max-width: 100%;
+      }
+      main {
+        max-width: 46rem;
+        margin: 0 auto;
+        padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom));
+      }
+      h1 { font-size: 1.35rem; margin: 0.5rem 0 0.25rem; }
+      p { margin: 0.5rem 0; }
+      .muted { color: var(--muted); }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 1rem;
+        margin: 1rem 0;
+        min-width: 0;
+      }
+      /* Long addresses and long reasons are the one thing on this page that can be wider than a
+         375px viewport. Wrapping them anywhere is what keeps the page from scrolling sideways. */
+      .wrap { overflow-wrap: anywhere; word-break: break-word; min-width: 0; }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.95rem;
+      }
+      .addr {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.95rem;
+        display: block;
+        padding: 0.75rem;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--bg);
+        overflow-wrap: anywhere;
+        min-height: var(--tap);
+      }
+      .row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
+      /* EVERY INTERACTIVE TARGET IS AT LEAST 44px IN BOTH DIRECTIONS. One rule, applied to every
+         interactive element type there is on this page, so a new button cannot be added under it
+         by accident. */
+      button, a.btn, summary {
+        min-height: var(--tap);
+        min-width: var(--tap);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        padding: 0.5rem 1rem;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: var(--bg);
+        color: var(--fg);
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+        text-decoration: none;
+        /* Reachable by tap, and never by hover alone: focus is styled, hover is not required. */
+        touch-action: manipulation;
+      }
+      button:focus-visible, a:focus-visible, summary:focus-visible {
+        outline: 3px solid var(--accent);
+        outline-offset: 2px;
+      }
+      /* A disclosure, not a hover menu or a right-click menu: it opens on tap and on Enter. */
+      details { margin-top: 1rem; }
+      summary { list-style: none; justify-content: flex-start; }
+      summary::-webkit-details-marker { display: none; }
+      dl { margin: 0; }
+      dl div { display: flex; flex-wrap: wrap; gap: 0.5rem; padding: 0.5rem 0; border-top: 1px solid var(--line); }
+      dt { color: var(--muted); min-width: 9rem; }
+      dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+      .pill {
+        display: inline-block;
+        padding: 0.25rem 0.6rem;
+        border-radius: 999px;
+        font-size: 0.85rem;
+        font-weight: 700;
+        border: 1px solid currentColor;
+      }
+      .pill.tailnet { color: var(--ok); }
+      .pill.local { color: var(--warn); }
+      /* Anything that genuinely cannot wrap scrolls INSIDE ITS OWN BOX, so the page never does. */
+      .scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>oh-my-agents</h1>
+      <p class="muted">This machine is serving its agents to you.</p>
+
+      <section class="card" aria-labelledby="reach-h">
+        <h2 id="reach-h" style="font-size: 1rem; margin: 0 0 0.5rem">Reachability</h2>
+        <p><span class="pill local" id="reach-pill">loading</span></p>
+        <p class="wrap muted" id="reach-note">Asking this host how it is serving&hellip;</p>
+        <p class="addr" id="address">&nbsp;</p>
+        <div class="row">
+          <button type="button" id="copy">Copy address</button>
+          <button type="button" id="refresh">Refresh</button>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="sess-h">
+        <h2 id="sess-h" style="font-size: 1rem; margin: 0 0 0.5rem">Sessions</h2>
+        <p id="sessions">&mdash;</p>
+        <p class="muted wrap">
+          Attaching to a session is Issue&nbsp;#2 and is not built yet. This host reports what it
+          owns, which right now is nothing.
+        </p>
+      </section>
+
+      <details>
+        <summary>Host details</summary>
+        <div class="card">
+          <dl id="details"></dl>
+        </div>
+      </details>
+    </main>
+
+    <script>
+      // No framework, no bundler, no build step. Plain script, served as written.
+      const $ = (id) => document.getElementById(id);
+
+      function setText(id, text) {
+        const el = $(id);
+        if (el) el.textContent = text;
+      }
+
+      async function refresh() {
+        setText('reach-note', 'Asking this host how it is serving…');
+        let data;
+        try {
+          const res = await fetch('/api/status', { cache: 'no-store' });
+          data = await res.json();
+        } catch (err) {
+          $('reach-pill').className = 'pill local';
+          setText('reach-pill', 'no answer');
+          setText('reach-note', 'This page could not reach the host it was served from: ' + err);
+          return;
+        }
+
+        const tailnet = data.reachability === 'tailnet';
+        $('reach-pill').className = 'pill ' + (tailnet ? 'tailnet' : 'local');
+        setText('reach-pill', tailnet ? 'on your tailnet' : 'local access only');
+        setText(
+          'reach-note',
+          tailnet
+            ? 'Any device on your tailnet can open this address. Nothing is published publicly.'
+            : data.determination === 'undetermined'
+              ? 'This host could not determine whether Tailscale is available, so it bound loopback only. That is not the same as Tailscale being absent.'
+              : 'Only this machine can reach the host right now.',
+        );
+
+        const primary = (data.tailnetAddresses && data.tailnetAddresses[0]) || '127.0.0.1';
+        const shown = primary.indexOf(':') >= 0 ? '[' + primary + ']' : primary;
+        setText('address', 'http://' + shown + ':' + data.port + '/');
+
+        const n = data.sessionCount;
+        setText('sessions', n === 1 ? '1 session' : n + ' sessions');
+
+        const dl = $('details');
+        dl.replaceChildren();
+        const rows = [
+          ['pid', String(data.pid)],
+          ['port', String(data.port)],
+          ['started', String(data.startedAt)],
+          ['listening on', (data.addresses || []).join(', ')],
+          ['determination', String(data.determination)],
+        ];
+        for (const [k, v] of rows) {
+          const row = document.createElement('div');
+          const dt = document.createElement('dt');
+          dt.textContent = k;
+          const dd = document.createElement('dd');
+          dd.textContent = v;
+          row.append(dt, dd);
+          dl.append(row);
+        }
+      }
+
+      $('refresh').addEventListener('click', refresh);
+      $('copy').addEventListener('click', async () => {
+        const text = $('address').textContent.trim();
+        try {
+          await navigator.clipboard.writeText(text);
+          setText('copy', 'Copied');
+        } catch {
+          // No clipboard permission on this browser: select the text instead, which a tap can do.
+          const range = document.createRange();
+          range.selectNodeContents($('address'));
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+          setText('copy', 'Selected — copy it');
+        }
+        setTimeout(() => setText('copy', 'Copy address'), 2000);
+      });
+
+      refresh();
+    </script>
+  </body>
+</html>
