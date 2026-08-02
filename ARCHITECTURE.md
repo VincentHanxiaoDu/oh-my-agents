@@ -35,7 +35,15 @@ oh-my-agents (CLI)
 | `src/host/state.ts` | the record a running host publishes | built |
 | `src/host/status.ts` | answering "is a host running here" | built |
 | `src/server/server.ts` | HTTP, static client, `/api/status` | built, minimal |
-| `src/server/seams.ts` | auth (#5), attach socket (#2), peer proxy (#3) | **refusing stubs** |
+| `src/server/seams.ts` | auth (#5), attach socket (#2), peer proxy (#3) | `requireAuth` built on #5; #2/#3 still refuse |
+| `src/server/pairing-http.ts` | the guard in front of every route, and the pairing routes | built on #5 |
+| `src/pairing/store.ts` | the pairing store on disk — **must not fail open** | built on #5 |
+| `src/pairing/auth.ts` | the per-request decision: may this request see anything | built on #5 |
+| `src/pairing/codes.ts` | one-time, time-limited pairing codes | built on #5 |
+| `src/pairing/credential.ts` | the device credential a paired browser holds | built on #5 |
+| `src/pairing/devices.ts` | pair, list, revoke | built on #5 |
+| `src/pairing/operator.ts` | how `status` identifies itself to its own host | built on #5 |
+| `src/pairing/mesh.ts` | verifying a credential this host did not issue | half built on #5, **half refuses to #3** |
 | `src/sessions/registry.ts` | the session interface; PTY sessions are #2 | interface + empty impl |
 | `src/web/` | the browser client, served with no build step | minimal, mobile-safe |
 | `src/paths.ts` | the XDG-respecting state directory | built |
@@ -64,6 +72,79 @@ code.** "Tailscale is not installed" and "I could not tell whether Tailscale is 
 user to different actions, and one of those actions is starting a second host beside a working one.
 Any new answer a later Issue adds must carry the same distinction.
 
+### Device pairing is in front of every route (Issue #5)
+
+Tailnet reachability is necessary trust and not sufficient trust — that is the whole reason Issue #5
+exists on top of Issue #1's bind policy. `requireAuth` in `src/server/seams.ts` is real middleware,
+called from `server.ts` **before any route is matched**, so a route added by a later Issue is behind
+it by construction rather than by its author remembering.
+
+**The denial is not an answer.** An unpaired, revoked or unrecognised caller gets byte-for-byte the
+same 404 that an unknown path gets: same status, same headers, same body, same length, no
+`WWW-Authenticate`, no `Set-Cookie`, no `Vary`. Criterion 6 requires the failure to leak nothing, so
+it leaks not even the fact that authentication is what failed. The one exception is a top-level
+browser **document** request, which gets the pairing prompt at 200 — that page names no agent, no
+session, no machine and no host, so it discloses only what completing a TCP handshake already did.
+
+Issue #2's attach socket **must** route through `authoriseUpgrade` / `denyUpgradeOpaquely`. The
+check is installed at the upgrade path in `server.ts`, ahead of the socket, precisely so that
+whatever #2 lands, it lands behind it. An upgrade handler that authenticates *after* accepting has
+already told the caller a socket exists.
+
+**A store that cannot be read denies.** `readStore` is three-valued exactly as `tailnet.ts` and
+`status.ts` are: `present | absent | undetermined`. `absent` means nobody has ever paired and is a
+normal first run; `undetermined` means unreadable, corrupt, wrong schema or a directory, and it
+grants nothing while saying so loudly in the host's log. Nothing in the request path turns an
+`undetermined` into an empty store, and `mutateStore` refuses to overwrite a store it could not
+read — overwriting it would silently revoke every device the user has.
+
+### The mesh credential — what #3 must build to (criterion 8)
+
+Criterion 8 ("paired once, not again per peer") is **settled and built**. The shape #3 should assume:
+
+```
+device credential:  oma1.<deviceId>.<mac>
+  deviceId  128 bits of randomness, hex — not secret; it is what the device list shows
+  mac       HMAC-SHA256(meshSecret, "oma1|" + deviceId), base64url — the secret half
+```
+
+It is an HMAC over a **mesh key** (`store.meshSecret`, 32 random bytes, per store) rather than a
+random token in one host's table, specifically so a peer can verify a credential it has never seen
+while holding only the key — no copy of every device's credential. `verifyForeignCredential` in
+`src/pairing/mesh.ts` is that check and it works today.
+
+**What Issue #5 deliberately did NOT decide, and what `src/pairing/mesh.ts` refuses rather than
+answering:**
+
+1. **How a peer comes to hold the mesh key.** Whether hosts share one key, or each holds its own and
+   hosts authenticate to each other and vouch for devices, is Issue #3's open decision ("how a peer
+   is trusted when joined"). `establishPeerTrust()` throws `NotImplementedOnThisIssue`.
+2. **How a revocation reaches a peer.** `verifyForeignCredential` establishes **authenticity**, not
+   current **authorisation** — only the issuing host's store knows a device was revoked. A peer
+   accepting a foreign credential on the HMAC alone would keep serving a revoked phone, which
+   criterion 5 forbids. Push, pull, or proxy-the-check-to-the-issuer is #3's call.
+   `propagateRevocation()` throws.
+
+#3 should either build to this shape or replace it deliberately — not invent a second one.
+
+### Not decided: whether a device credential ever expires on its own
+
+Issue #5 records as unsettled whether a paired device's credential has a lifetime of its own. The
+acceptance criteria assert **explicit revocation only**, and that is what is built: `oh-my-agents
+revoke` ends a device and nothing else ever does. The host never checks a credential's age.
+
+**Do not conflate this with the pairing code's expiry.** The *code* is single-use and expires in
+five minutes, which criterion 3 requires and which is built. The *device credential*'s lifetime is
+the open question. They are both "expiry" and merging them silently answers a question that is not
+a dev branch's to answer.
+
+Flags that would settle it — `--device-ttl`, `--credential-ttl`, `--session-ttl`,
+`--session-lifetime`, `--device-max-age`, `--max-age`, `--expire-after`, `--expire-devices`,
+`--idle-timeout`, `--reauth-after`, `--require-reauth`, `--pairing-lifetime` — refuse with exit code
+6 and name the Issue, the same pattern Issue #1 used for `--install-service`. If the decision lands
+on "credentials expire", it is enforced server-side in `authenticate()`, not by shortening the
+cookie's `Max-Age`.
+
 ### Exit codes
 
 | Code | Meaning |
@@ -74,6 +155,7 @@ Any new answer a later Issue adds must carry the same distinction.
 | 4 | we looked, and no host is running here |
 | 5 | we looked, and could not tell — **not** the same as 4 |
 | 6 | refused: an open product decision was asked for |
+| 7 | we looked, and the thing you named is not there (Issue #5: no such paired device) |
 
 ### State on disk
 
@@ -83,6 +165,13 @@ Any new answer a later Issue adds must carry the same distinction.
 Issue #1 creates only `host.json` (the record), `host.lock`, and `host.log`. Issues #2
 (transcripts), #3 (peers) and #5 (pairing state) put their files under the same directory using the
 same helper — do not invent a second location.
+
+Issue #5 adds `pairing.json` (mode `0600`) and `pairing.lock` there, via `stateDir()` and nothing
+else. That file is what makes pairing survive a host restart (criterion 7): nothing about pairing is
+held in memory, and the store is re-read on **every** request rather than cached, because a cache
+with any TTL turns criterion 5's "that device's next request is rejected" into "rejected once the
+cache expires". Writes are a locked read-modify-write with a rename over the target, so a store is
+never observed half-written and a pairing code cannot be redeemed twice by two racing processes.
 
 ### The browser client has no build step
 
