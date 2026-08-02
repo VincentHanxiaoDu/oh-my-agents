@@ -15,7 +15,10 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isLoopbackAddress, isTailscaleAddress } from '../src/host/bind.js';
+// `isTailscaleAddress` is still imported, and still used — but only in an ASSERTION (that the
+// banner's printed address really is a tailnet one), never in a skip guard. An assertion that calls
+// the code under test fails loudly when that code is wrong; a skip guard that calls it goes quiet.
+import { isTailscaleAddress } from '../src/host/bind.js';
 import { detectTailnet } from '../src/host/tailnet.js';
 
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cli', 'main.js');
@@ -56,6 +59,33 @@ function tryConnect(host: string, port: number, timeoutMs = 3000): Promise<'conn
   });
 }
 
+// THE SKIP GUARD RE-DERIVES MEMBERSHIP RATHER THAN ASKING THE CODE UNDER TEST.
+//
+// This filter used to call the production `isLoopbackAddress` / `isTailscaleAddress` — the very
+// predicates this file exists to police. Make `isTailscaleAddress` unconditionally permissive (the
+// DANGEROUS direction, the one that widens the bind set) and every local address is filtered out,
+// so the list comes back empty and the test SKIPS, printing "this machine has no IPv4 address that
+// is neither loopback nor a Tailscale address" — false on a machine holding 192.168.2.1. Measured:
+// baseline `pass 47 fail 0 skipped 0`, mutant `pass 40 fail 6 skipped 1`.
+//
+// COULD NOT DETERMINE and DETERMINED TO BE NOTHING would share one outcome, which is the exact
+// confusion `bind.ts`, `status.ts` and `tailnet.ts` are all built to avoid. So the definitions are
+// restated here from the RFCs, as `bind.test.ts`'s invariant test already does — its independence
+// is why it catches that mutant honestly.
+//
+// The legitimate environmental skip still works: a CI runner really holding no such address has an
+// empty list under these local predicates too, and skips green.
+const isLoopbackV4 = (a: string): boolean => /^127\./.test(a);
+
+/** 100.64.0.0/10 — Tailscale's CGNAT range, per RFC 6598. Derived here, not asked of the product. */
+const isTailscaleSpaceV4 = (a: string): boolean => {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(a.trim());
+  if (!m) return false;
+  const o = m.slice(1).map(Number);
+  if (o.some((n) => n > 255)) return false;
+  return o[0] === 100 && o[1]! >= 64 && o[1]! <= 127;
+};
+
 /** Every IPv4 address on this machine that is neither loopback nor inside Tailscale's space. */
 function nonTailnetNonLoopbackIPv4(): string[] {
   const out: string[] = [];
@@ -63,7 +93,7 @@ function nonTailnetNonLoopbackIPv4(): string[] {
     for (const e of entries ?? []) {
       if (e.family !== 'IPv4') continue;
       const a = e.address;
-      if (isLoopbackAddress(a) || isTailscaleAddress(a)) continue;
+      if (isLoopbackV4(a) || isTailscaleSpaceV4(a)) continue;
       if (a.startsWith('169.254.')) continue; // link-local: not a path anyone would come in on
       out.push(a);
     }
