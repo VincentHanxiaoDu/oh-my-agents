@@ -24,6 +24,7 @@
         --accent: #1c5fd0;
         --ok: #0d7a4a;
         --warn: #8a5a00;
+        --bad: #a02020;
         /* 44px is the criterion. It is a variable so it cannot drift apart across rules. */
         --tap: 44px;
       }
@@ -37,6 +38,7 @@
           --accent: #6fa4ff;
           --ok: #4cc38a;
           --warn: #e0a33a;
+          --bad: #ff8080;
         }
       }
       * { box-sizing: border-box; }
@@ -132,6 +134,65 @@
       .pill.local { color: var(--warn); }
       /* Anything that genuinely cannot wrap scrolls INSIDE ITS OWN BOX, so the page never does. */
       .scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+
+      /* ── ISSUE #3, THE MESH ─────────────────────────────────────────────────────────────────
+         CRITERION 4 IS A RENDERING REQUIREMENT AS MUCH AS A DATA ONE: an unreachable machine and
+         an idle one must not look alike. So the four states get four different status words, four
+         colours AND a sentence each — colour alone would fail for a person who cannot see it, and
+         a phone in sunlight is that person. The word is always present; the colour is a bonus. */
+      .pill.ok { color: var(--ok); }
+      .pill.idle { color: var(--muted); }
+      .pill.down { color: var(--bad); }
+      .pill.blocked { color: var(--warn); }
+      .pill.unknown { color: var(--warn); }
+      .machine {
+        border-top: 1px solid var(--line);
+        padding: 0.75rem 0 0.25rem;
+        min-width: 0;
+      }
+      .machine:first-child { border-top: 0; }
+      .machine h3 {
+        font-size: 1rem;
+        margin: 0 0 0.35rem;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.5rem;
+        overflow-wrap: anywhere;
+      }
+      /* CRITERION 9: the whole list is text and buttons at 44px. Nothing here needs a pointer —
+         no hover state carries information, no right-click menu, nothing to drag. */
+      .agent {
+        display: block;
+        padding: 0.6rem 0;
+        min-height: var(--tap);
+        overflow-wrap: anywhere;
+      }
+      .agent .on { color: var(--muted); font-size: 0.9rem; }
+      /* A full-width field and a full-width button, so a thumb can reach both one-handed. */
+      .joiner { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
+      .joiner input {
+        flex: 1 1 12rem;
+        min-width: 0;
+        min-height: var(--tap);
+        padding: 0.5rem 0.75rem;
+        font: inherit;
+        color: var(--fg);
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+      }
+      .joiner button { flex: 0 0 auto; }
+      /* A label that a screen reader reads and a sighted person does not need. Not `display:none`,
+         which would take it out of the accessibility tree along with the pixels. */
+      .visually-hidden {
+        position: absolute;
+        width: 1px; height: 1px;
+        margin: -1px; padding: 0; border: 0;
+        clip-path: inset(50%);
+        overflow: hidden;
+        white-space: nowrap;
+      }
     </style>
   </head>
   <body>
@@ -153,11 +214,31 @@
       </section>
 
       <section class="card" aria-labelledby="sess-h">
-        <h2 id="sess-h" style="font-size: 1rem; margin: 0 0 0.5rem">Sessions</h2>
+        <h2 id="sess-h" style="font-size: 1rem; margin: 0 0 0.5rem">Sessions on this machine</h2>
         <p id="sessions">&mdash;</p>
         <p class="muted wrap">
           Attaching to a session is Issue&nbsp;#2 and is not built yet. This host reports what it
           owns, which right now is nothing.
+        </p>
+      </section>
+
+      <!-- ISSUE #3. Every machine joined to this one, and every agent on all of them, in ONE list.
+           This host asks each peer directly, over the tailnet it is already on: there is no relay,
+           no tunnel and no process anywhere else (criterion 8). -->
+      <section class="card" aria-labelledby="mesh-h">
+        <h2 id="mesh-h" style="font-size: 1rem; margin: 0 0 0.5rem">Machines</h2>
+        <p class="wrap" id="mesh-summary">Asking every joined machine what it has&hellip;</p>
+        <div id="machines"></div>
+
+        <div class="joiner">
+          <label class="visually-hidden" for="join-address">Address of a host to join</label>
+          <input id="join-address" type="text" inputmode="url" autocapitalize="off" autocorrect="off"
+                 spellcheck="false" placeholder="100.64.0.3:8787" />
+          <button type="button" id="join">Join</button>
+        </div>
+        <p class="muted wrap" id="join-note">
+          Paste the address another host printed when it started. Joining is per-machine: run
+          <code>oh-my-agents join</code> on that machine too, and each will see the other.
         </p>
       </section>
 
@@ -169,8 +250,11 @@
       </details>
     </main>
 
-    <script>
-      // No framework, no bundler, no build step. Plain script, served as written.
+    <script type="module">
+      // No framework, no bundler, no build step. Plain module, served as written. The one import
+      // below is a file this host serves; there is no CDN and no external request.
+      import { describeAgent, describeHost, describeSummary } from './mesh-view.js';
+
       const $ = (id) => document.getElementById(id);
 
       function setText(id, text) {
@@ -238,7 +322,118 @@
         }
       }
 
-      $('refresh').addEventListener('click', refresh);
+      // ── ISSUE #3: the unified list ───────────────────────────────────────────────────────────
+      async function refreshMesh() {
+        let view;
+        try {
+          const res = await fetch('/api/mesh', { cache: 'no-store' });
+          if (res.status === 404) {
+            window.location.assign('/pair');
+            return;
+          }
+          view = await res.json();
+        } catch (err) {
+          // The host this page came FROM did not answer. Nothing is said about the peers, because
+          // nothing is known about them — showing them as "no agents" here would be the criterion-4
+          // failure committed by the client instead of the server.
+          setText('mesh-summary', 'This page could not reach the host it was served from: ' + err);
+          $('machines').replaceChildren();
+          return;
+        }
+
+        setText('mesh-summary', describeSummary(view));
+        const box = $('machines');
+        box.replaceChildren();
+
+        // A peer FILE that could not be read is not "no peers". Said before the list, loudly.
+        if (view.peersUndetermined) {
+          const p = document.createElement('p');
+          p.className = 'wrap';
+          p.textContent =
+            'COULD NOT READ which machines are joined to this one, so this list may be missing some: ' +
+            view.peersUndetermined +
+            ' This is NOT the same as no machines being joined.';
+          box.append(p);
+        }
+
+        for (const raw of view.hosts || []) {
+          const host = describeHost(raw);
+          const section = document.createElement('div');
+          section.className = 'machine';
+
+          const heading = document.createElement('h3');
+          const nameEl = document.createElement('span');
+          nameEl.textContent = host.name + (host.self ? ' (this machine)' : '');
+          const pill = document.createElement('span');
+          // THE STATUS WORD IS ALWAYS RENDERED. `unreachable`, `no agents`, `not trusted yet` and
+          // `undetermined` are four different words in four different places — criterion 4.
+          pill.className = 'pill ' + host.tone;
+          pill.textContent = host.status;
+          heading.append(nameEl, pill);
+          section.append(heading);
+
+          const detail = document.createElement('p');
+          detail.className = 'muted wrap';
+          detail.textContent = host.address + ' — ' + host.detail;
+          section.append(detail);
+
+          // NULL means unknown and renders as nothing but the sentence above. Only a machine that
+          // ANSWERED gets an agent list, and an empty one from an answering machine says so.
+          if (host.agents !== null) {
+            for (const rawAgent of host.agents) {
+              const agent = describeAgent({ ...rawAgent, machine: host.name, address: host.address, key: host.address + ':' + rawAgent.id });
+              const row = document.createElement('div');
+              row.className = 'agent';
+              const title = document.createElement('div');
+              title.textContent = agent.title;
+              const on = document.createElement('div');
+              on.className = 'on';
+              // CRITERION 5: the machine is on every row, so two identically named agents on two
+              // machines are two rows a person can tell apart without opening anything.
+              on.textContent = 'on ' + agent.machine + (agent.alive ? '' : ' — not running');
+              row.append(title, on);
+              section.append(row);
+            }
+          }
+          box.append(section);
+        }
+      }
+
+      async function join() {
+        const address = $('join-address').value.trim();
+        if (address === '') return;
+        setText('join-note', 'Joining ' + address + '…');
+        try {
+          const res = await fetch('/api/peers/join', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ address }),
+          });
+          const body = await res.json();
+          if (res.ok && body.duplicate) {
+            // CRITERION 6, as a person sees it: asking again is not an error and adds nothing.
+            setText('join-note', address + ' was already joined. Nothing was added.');
+          } else if (res.ok) {
+            setText('join-note', 'Joined ' + body.joined.address + '. Run the same command on that machine so it sees this one.');
+            $('join-address').value = '';
+          } else {
+            setText('join-note', body.error || ('that did not join (' + res.status + ')'));
+          }
+        } catch (err) {
+          setText('join-note', 'that did not join: ' + err);
+        }
+        await refreshMesh();
+      }
+
+      $('join').addEventListener('click', join);
+      $('join-address').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') join();
+      });
+
+      $('refresh').addEventListener('click', () => {
+        refresh();
+        refreshMesh();
+      });
       $('copy').addEventListener('click', async () => {
         const text = $('address').textContent.trim();
         try {
@@ -257,6 +452,7 @@
       });
 
       refresh();
+      refreshMesh();
     </script>
   </body>
 </html>

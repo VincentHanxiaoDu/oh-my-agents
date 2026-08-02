@@ -37,12 +37,19 @@ test('no interactive element type is styled below the 44px tap floor', () => {
 });
 
 test('every interactive element in the markup is one the 44px rule covers', () => {
+  // `button`, `a` and `summary` are covered by the ONE shared rule. Any other interactive element
+  // type has to bring its own rule that uses the same variable — Issue #3 added a text input for a
+  // peer address, and it is listed here WITH the selector that sizes it, so an input added without
+  // one still fails.
+  const sizedSeparately: Record<string, RegExp> = {
+    input: /\.joiner input\s*\{[^}]*min-height:\s*var\(--tap\)/,
+  };
   const interactive = [...html.matchAll(/<(button|a|summary|input|select|textarea)\b/g)].map((m) => m[1]);
   for (const tag of interactive) {
-    assert.ok(
-      tag === 'button' || tag === 'summary' || tag === 'a',
-      `<${tag}> is interactive and is not covered by the 44px rule — either size it or remove it`,
-    );
+    if (tag === 'button' || tag === 'summary' || tag === 'a') continue;
+    const rule = sizedSeparately[tag!];
+    assert.ok(rule, `<${tag}> is interactive and is not covered by the 44px rule — either size it or remove it`);
+    assert.match(html, rule, `<${tag}> has a rule for it, and that rule does not reach the 44px floor`);
   }
   assert.ok(interactive.length > 0, 'the page has no interactive elements, so this test proved nothing');
 });
@@ -67,8 +74,23 @@ test('long content wraps or scrolls in its own box, so the page never scrolls si
   assert.match(html, /\.scroll-x\s*\{[^}]*overflow-x:\s*auto/);
 });
 
-test('the client needs no build step: no imports, no bundler references', () => {
-  assert.ok(!/<script[^>]+src=/.test(html), 'the page loads an external script; it must be self-contained');
+test('the client needs no build step: no bundler, no external request', () => {
   assert.ok(!/<link[^>]+stylesheet/.test(html), 'the page loads an external stylesheet');
-  assert.ok(!/\btype="module"/.test(html) || !/from ['"]/.test(html), 'the page uses module imports');
+  // NO EXTERNAL REQUEST. This is the property that matters and it is asserted directly: nothing on
+  // this page may be fetched from anywhere but the host that served it.
+  const external = html.match(/(?:src|href)="(?:https?:)?\/\/[^"]+"/g) ?? [];
+  assert.deepEqual(external, [], `the page must fetch nothing from another origin, found ${external.join(', ')}`);
+
+  // NO BUILD STEP. Issue #3 added a module import, and a module import is not a build step — the
+  // browser resolves it, this host serves the file as written, and `scripts/copy-web.mjs` copies it
+  // verbatim. What WOULD be a build step is a bundler, a transform, or an import the browser cannot
+  // resolve on its own, and those are what is forbidden here.
+  for (const spec of [...html.matchAll(/from ['"]([^'"]+)['"]/g)].map((m) => m[1]!)) {
+    assert.ok(
+      spec.startsWith('./') || spec.startsWith('../') || spec.startsWith('/'),
+      `${spec} is a bare specifier; a browser cannot resolve one without a bundler or an import map`,
+    );
+    assert.ok(spec.endsWith('.js'), `${spec} must name a real file this host serves`);
+  }
+  assert.ok(!/\b(webpack|rollup|vite|esbuild|parcel|browserify)\b/i.test(html), 'the page references a bundler');
 });
