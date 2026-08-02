@@ -1,7 +1,19 @@
 # Tasks
 
-A box is ticked only where the work is done AND was run. Two boxes are deliberately left unticked;
-both are named in the pull request body rather than quietly dropped.
+A box is ticked only where the work is done AND was run.
+
+TWO THINGS WERE IN SCOPE AND ARE NOT HERE, and they are recorded as prose rather than as ticked
+boxes, because a ticked box is a claim that something was done:
+
+  1. Criterion 3 end to end against a REAL PTY SESSION. Issue #2 owns the attach socket, is not
+     merged and is not on this branch, so there is nothing to attach to. Building a second PTY here
+     would duplicate #2 and produce a conflict. What ran instead is the proxy path against a
+     controllable stand-in at the upgrade boundary, which is where #2 will plug in.
+  2. The 375px layout MEASURED BY HAND in a real browser. This environment has no browser. What ran
+     is the set of checks decidable from the source, which is what Issue #1's own web test does and
+     is described there in the same terms.
+
+Both are named in the pull request body. Neither is ticked below.
 
 Every assertion listed under "watched go red" was verified by breaking the code, observing the
 failure, restoring it, and observing the pass — not by reading the test.
@@ -38,8 +50,6 @@ failure, restoring it, and observing the pass — not by reading the test.
 - [x] The proxied upgrade is behind Issue #5's upgrade authorisation, with a really paired device
 - [x] An attach naming an unjoined host gets the opaque 404 and does not echo the address back
 - [x] Watched go red: opening a socket without a credential turns the refusal into an attempt
-- [ ] Demonstrated end to end against a real PTY session — **blocked on Issue #2**, which is not
-      merged and not on this branch. Building a second PTY here would duplicate #2.
 
 ## Criterion 4 — unreachable is not empty, in the data AND on the screen
 
@@ -86,8 +96,6 @@ failure, restoring it, and observing the pass — not by reading the test.
 - [x] Nothing behind hover, right-click or drag; the status is a WORD, not only a colour
 - [x] Long addresses and long failure reasons wrap; the join row wraps rather than widening the page
 - [x] Issue #1's own web test was extended rather than weakened, so an unsized input still fails it
-- [ ] Measured by hand in a real browser at 375×812 — **not run here**: this environment has no
-      browser, and the checks that are decidable from the source are the ones that ran.
 
 ## The two open decisions — refused, not answered
 
