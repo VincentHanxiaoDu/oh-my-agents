@@ -16,6 +16,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertSafeBindSet, type BindPlan } from '../host/bind.js';
 import type { SessionRegistry } from '../sessions/registry.js';
+import { authoriseUpgrade, denyUpgradeOpaquely, requireAuth } from './seams.js';
+import { grants } from '../pairing/auth.js';
+import type { PathEnv } from '../paths.js';
 
 export interface ServerOptions {
   plan: BindPlan;
@@ -24,6 +27,8 @@ export interface ServerOptions {
   /** Directory holding the no-build browser client. Defaults to the shipped src/web. */
   webRoot?: string;
   startedAt?: string;
+  /** Overrides for the state directory. Injected by tests; the daemon passes process.env. */
+  env?: PathEnv;
 }
 
 export interface RunningServer {
@@ -53,6 +58,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const startedAt = opts.startedAt ?? new Date().toISOString();
 
   const handler = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
+    // ISSUE #5. Before any route is matched, so a route added later is behind it by construction.
+    if ((await requireAuth(req, res, { webRoot, ...(opts.env ? { env: opts.env } : {}) })) !== 'continue') return;
     const url = new URL(req.url ?? '/', 'http://host.invalid');
     const route = url.pathname;
 
@@ -105,10 +112,18 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           else res.end();
         });
       });
-      // The attach socket belongs to Issue #2. Until it exists, an upgrade attempt is refused in
-      // words rather than left to hang — a hanging upgrade is indistinguishable from a bug in the
-      // client, and #2 will otherwise spend a day finding out it was never wired.
-      server.on('upgrade', (_req, socket) => {
+      // ISSUE #5 AUTHORISES THE UPGRADE PATH ITSELF, not the socket behind it. Issue #2's attach
+      // socket does not exist on this branch, so putting the check inside it was not available —
+      // and putting it here is better anyway: whatever #2 lands, it lands behind this, and an
+      // unpaired caller never learns whether an attach socket exists at all. #2 MUST keep this
+      // check first; a handler that authenticates after accepting has already answered the question.
+      server.on('upgrade', (req, socket) => {
+        if (!grants(authoriseUpgrade(req, opts.env ?? process.env))) {
+          denyUpgradeOpaquely(socket);
+          return;
+        }
+        // Paired, and there is still nothing to attach to on this branch. Refused in words, as
+        // Issue #1 left it — a paired device is allowed to know that this host has no attach yet.
         socket.end('HTTP/1.1 501 Not Implemented\r\nConnection: close\r\n\r\nthe attach WebSocket is Issue #2\n');
       });
       await listen(server, opts.port, address);

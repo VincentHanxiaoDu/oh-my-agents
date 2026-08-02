@@ -147,6 +147,8 @@
         <div class="row">
           <button type="button" id="copy">Copy address</button>
           <button type="button" id="refresh">Refresh</button>
+          <!-- ISSUE #5, CRITERION 4: paired devices are listable and revocable from a phone. -->
+          <a class="btn" href="/devices">Devices</a>
         </div>
       </section>
 
@@ -181,6 +183,14 @@
         let data;
         try {
           const res = await fetch('/api/status', { cache: 'no-store' });
+          // ISSUE #5, CRITERION 5. A 404 here is what this host returns to a device it does not
+          // recognise — it is the same opaque answer an unknown path gets, deliberately, so the
+          // response says nothing about what is running. For this page it means one thing: this
+          // browser has been revoked (or never paired). Go to the pairing prompt.
+          if (res.status === 404) {
+            window.location.assign('/pair');
+            return;
+          }
           data = await res.json();
         } catch (err) {
           $('reach-pill').className = 'pill local';

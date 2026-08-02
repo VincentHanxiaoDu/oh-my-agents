@@ -5,18 +5,30 @@
 // this project is built against: a host that appears to have authentication because a function
 // called `authenticate` exists and returns true.
 //
-// Nothing in this file is wired into the request path on Issue #1. `requireAuth` in particular is
-// NOT installed as middleware: installing a refusing middleware would make the host unusable, and
-// installing a permissive one would make it look authenticated when it is not. Issue #5 installs
-// the real one.
+// ISSUE #5 HAS FILLED ITS SEAM. `requireAuth` below is no longer a refusal: it is the real guard,
+// it is installed in `server.ts`, and every route on this host is behind it. The other two seams
+// are untouched and still refuse — they belong to Issues #2 and #3.
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { NotImplementedOnThisIssue } from '../sessions/registry.js';
+import { guardRequest, type GuardOptions, type GuardResult } from './pairing-http.js';
 
-/** SEAM FOR ISSUE #5: pairing / authentication middleware in front of every route. */
-export function requireAuth(_req: IncomingMessage, _res: ServerResponse): never {
-  throw new NotImplementedOnThisIssue('request authentication', 'Issue #5 (pair a device with a host)');
+export { authoriseUpgrade, denyUpgradeOpaquely, denyOpaquely } from './pairing-http.js';
+export type { GuardOptions, GuardResult } from './pairing-http.js';
+
+/**
+ * ISSUE #5: pairing / authentication in front of every route.
+ *
+ * Returns `continue` ONLY for a request carrying a credential this host issued and has not revoked.
+ * Every other outcome — no credential, a forged one, a revoked one, and a pairing store this host
+ * cannot read — is `handled`, and the response has already been written by the time it returns.
+ *
+ * NOTHING ABOUT THIS FUNCTION FAILS OPEN. There is no boolean to get backwards and no exception to
+ * swallow: the caller cannot serve a route without having received the string `continue`.
+ */
+export function requireAuth(req: IncomingMessage, res: ServerResponse, opts: GuardOptions): Promise<GuardResult> {
+  return guardRequest(req, res, opts);
 }
 
 /** SEAM FOR ISSUE #2: the WebSocket upgrade that carries a terminal attach. */
