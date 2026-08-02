@@ -39,3 +39,33 @@ have not identified; that is the mistake in this Issue's own postmortem.
 The guard lives in `bin/`, which belongs to this project. `.workflow/bin/` belongs to the installer
 and is replaced wholesale on every refresh, so a guard written there would vanish silently on the
 next install. Nothing under `.workflow/bin/` was modified.
+
+## Before you push a change: `make archivable`
+
+```
+make archivable OPENSPEC_BASE=origin/main   # only the changes your branch touches
+./bin/check-archivable.sh --self-test       # the gate's own arms
+```
+
+`bin/check-archivable.sh` runs `openspec validate <change> --strict`. **`make ci` runs it, so CI
+runs it** — you do not have to remember, and that is the point.
+
+**Why it exists, from Issue #12.** No other gate on a branch runs `openspec validate`.
+`check-tasks-complete.sh` checks only that `## ADDED Requirements`, `### Requirement:` and
+`#### Scenario:` are *present*. So a change can be green on all five gates and still be one
+`openspec archive` refuses. It happened twice, with the same defect: PR #10 reached product at UAT
+and was refused with 9 errors; PR #13 passed all five gates *and* a thorough independent review and
+was caught only because someone ran `openspec validate` by hand.
+
+**The defect, and the fix that is NOT the fix.** Requirement **body** text must use uppercase
+`SHALL` or `MUST`. Leave `### Requirement:` **headers in prose** — uppercasing a header renames the
+requirement and moves its identifier, which breaks more than it fixes.
+
+**Read its answers as four answers.** `0` validated; `0` + `NOT APPLICABLE` (no `openspec/` here);
+`1` a change openspec will not archive; `3` **CANNOT TELL** — no `openspec` CLI could be located, or
+the base sha is not in this clone. A `3` is not a verdict about your specification and not a pass:
+nothing was validated. Do not "fix" a `3` by editing your spec; install the CLI or fetch the base.
+
+The gate lives in `bin/`, which belongs to this project. `.workflow/bin/` is replaced wholesale on
+every installer refresh, so a gate written there would vanish silently. Nothing under
+`.workflow/bin/` was modified.

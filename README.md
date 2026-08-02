@@ -26,6 +26,41 @@ past a `3` without identifying what holds it, and do not kill a watcher you have
 The guard lives in `bin/` because `.workflow/bin/`, `.claude/` and `.github/` belong to the
 installer and are replaced wholesale on every refresh. Nothing under those paths was modified.
 
+## Is this branch's OpenSpec change one that can be archived?
+
+```
+make ci                                   # runs it, among everything else
+make archivable OPENSPEC_BASE=origin/main # only the changes this branch touches
+./bin/check-archivable.sh --self-test     # a gate that cannot be shown to fail is not a gate
+```
+
+`bin/check-archivable.sh` runs `openspec validate <change> --strict` and **fails a branch carrying
+a change `openspec archive` would refuse**.
+
+**Why.** Nothing else on a branch runs `openspec validate`. `check-tasks-complete.sh` checks only
+that the required headings are *present*. Twice a change has satisfied every gate and been refused
+at archive time for lowercase `shall` in requirement bodies — once after a thorough independent
+review as well (Issue #12). The work merges, the specification does not, and whoever merges finds
+out.
+
+**Fix bodies, never headers.** The normative keyword must be uppercase `SHALL` or `MUST` in
+requirement **body** text. `### Requirement:` headers stay in prose — uppercasing one renames the
+requirement and moves its identifier.
+
+**Four answers, and they never share an exit code.** `0` every change in scope validates; `0` +
+`NOT APPLICABLE` for a project with no `openspec/`; `1` a change openspec will not archive; `3`
+**CANNOT TELL** — no CLI could be located, or the base sha is not in this clone. A `3` blocks, and
+says in words that nothing was validated: *could not determine* is not *determined to be nothing*.
+
+**The CLI is probed, not named:** `$OPENSPEC_BIN`, `$PATH`, `./node_modules/.bin`, then `npx`, so it
+runs on a CI runner that has node and no `openspec`. With no base sha — the CI case, since that job
+checks out shallow — every in-flight change in the tree is validated instead of only the touched
+ones, and the widening is printed.
+
+It lives in `bin/` for the same reason `watch.sh` does: `.workflow/bin/`, `.claude/` and `.github/`
+belong to the installer and are replaced wholesale on every refresh, so a gate written there would
+vanish silently. Nothing under those paths was modified.
+
 ## Tests
 
 ```
