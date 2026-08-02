@@ -8,19 +8,33 @@
 // rather than implied by a firewall rule somebody has to remember.
 //
 // Issue #2 adds the attach WebSocket, #3 adds peer proxying, #5 adds auth. Their seams are in
-// seams.ts and are not wired in here.
+// seams.ts.
+//
+// ISSUE #2 TOUCHED THIS FILE IN TWO PLACES AND NO MORE, deliberately: one `if` in the request
+// handler that delegates to `handleSessionRoute`, and the body of the `upgrade` listener. Both
+// delegate immediately to a module of their own. Issue #5 is being built from the same commit and
+// installs its middleware here too; keeping this branch's footprint to two hunks is what makes
+// whichever lands second a trivial rebase rather than a merge of two rewrites.
 
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertSafeBindSet, type BindPlan } from '../host/bind.js';
-import type { SessionRegistry } from '../sessions/registry.js';
+import type { PtyRegistry, SessionRegistry } from '../sessions/registry.js';
+import { handleSessionRoute } from '../sessions/http.js';
+import { handleAttachUpgrade } from './seams.js';
 
 export interface ServerOptions {
   plan: BindPlan;
   port: number;
   registry: SessionRegistry;
+  /**
+   * The PTY-backed registry, when this host owns sessions (Issue #2). Optional so a host can still
+   * be started with `createEmptyRegistry()` — a test fixture, or a machine with no pty support —
+   * without the session routes pretending to work.
+   */
+  sessions?: PtyRegistry;
   /** Directory holding the no-build browser client. Defaults to the shipped src/web. */
   webRoot?: string;
   startedAt?: string;
@@ -60,6 +74,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       json(res, 200, { ok: true });
       return;
     }
+
+    // ISSUE #2: session list, spawn, signal. Returns false when the request was not one of those.
+    if (opts.sessions && (await handleSessionRoute(req, res, { registry: opts.sessions }))) return;
 
     if (route === '/api/status') {
       json(res, 200, {
@@ -105,11 +122,19 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           else res.end();
         });
       });
-      // The attach socket belongs to Issue #2. Until it exists, an upgrade attempt is refused in
-      // words rather than left to hang — a hanging upgrade is indistinguishable from a bug in the
-      // client, and #2 will otherwise spend a day finding out it was never wired.
-      server.on('upgrade', (_req, socket) => {
-        socket.end('HTTP/1.1 501 Not Implemented\r\nConnection: close\r\n\r\nthe attach WebSocket is Issue #2\n');
+      // ISSUE #2: the attach socket. A host with no PTY-backed registry still refuses IN WORDS
+      // rather than leaving the upgrade to hang — a hanging upgrade is indistinguishable from a bug
+      // in the client, and costs whoever is debugging it an afternoon.
+      server.on('upgrade', (req, socket, head) => {
+        const sessions = opts.sessions;
+        if (!sessions) {
+          socket.end(
+            'HTTP/1.1 501 Not Implemented\r\nConnection: close\r\n\r\n' +
+              'this host was started without a session registry, so there is nothing to attach to\n',
+          );
+          return;
+        }
+        handleAttachUpgrade(req, socket, head, { registry: sessions });
       });
       await listen(server, opts.port, address);
       servers.push(server);
