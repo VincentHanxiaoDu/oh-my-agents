@@ -35,7 +35,17 @@ oh-my-agents (CLI)
 | `src/host/state.ts` | the record a running host publishes | built |
 | `src/host/status.ts` | answering "is a host running here" | built |
 | `src/server/server.ts` | HTTP, static client, `/api/status` | built, minimal |
-| `src/server/seams.ts` | auth (#5), attach socket (#2), peer proxy (#3) | `requireAuth` built on #5; #2/#3 still refuse |
+| `src/server/seams.ts` | auth (#5), attach socket (#2), peer proxy (#3) | `requireAuth` (#5) and `proxyToPeer` (#3) built; #2 still refuses |
+| `src/server/mesh-http.ts` | the unified view, the join routes, the proxied attach | built on #3 |
+| `src/mesh/address.ts` | canonicalising a peer address — where criterion 6 is decided | built on #3 |
+| `src/mesh/peers.ts` | the join records on disk, and deduplication | built on #3 |
+| `src/mesh/identity.ts` | this machine's durable name, so agents can be labelled | built on #3 |
+| `src/mesh/client.ts` | asking a peer what it has, four-valued | built on #3 |
+| `src/mesh/aggregate.ts` | one unified list, from joins or from an explicit list | built on #3 |
+| `src/mesh/view.ts` | the shape of the unified list — **where criterion 4 lives** | built on #3 |
+| `src/mesh/proxy.ts` | relaying a request or an upgrade to the owning host | built on #3 |
+| `src/mesh/trust.ts` | **how a host authenticates to a peer — REFUSES, open decision** | refuses on #3 |
+| `src/web/mesh-view.js` | how a machine and its agents are rendered, no build step | built on #3 |
 | `src/server/pairing-http.ts` | the guard in front of every route, and the pairing routes | built on #5 |
 | `src/pairing/store.ts` | the pairing store on disk — **must not fail open** | built on #5 |
 | `src/pairing/auth.ts` | the per-request decision: may this request see anything | built on #5 |
@@ -126,6 +136,66 @@ answering:**
    `propagateRevocation()` throws.
 
 #3 should either build to this shape or replace it deliberately — not invent a second one.
+
+### The mesh (Issue #3): every host holds its own peer list
+
+There is **no membership document, no leader and no gossip.** Each host keeps its own `peers.json`
+in the state directory `src/paths.ts` resolves, and asks each peer **directly** over the network
+Issue #1 already put it on. `join` is a LOCAL write; symmetry is two local writes, one on each
+machine, rather than a protocol. That is what makes criterion 2 true by construction: A asking C
+does not route through B, so stopping B changes nothing about A and C.
+
+It is also the whole of criterion 8. There is no relay, no tunnel, no broker, no discovery service
+and no account. The only processes involved in a unified list are the hosts in it.
+
+**Four-valued, and none of the four is an empty list.** `src/mesh/view.ts` defines:
+
+| Answer | Means | Renders as |
+| --- | --- | --- |
+| `listed` | it answered; this is its list, possibly empty | `N agents` / `no agents` |
+| `unreachable` | it did not answer | `unreachable` |
+| `not-trusted` | it answered and did not accept us | `not trusted yet` |
+| `undetermined` | it answered something we cannot read | `undetermined` |
+
+`listed` with `agents: []` is a **determined fact**. The other three carry `agents: null`, not `[]`,
+so nothing downstream can iterate an empty list and conclude a machine is idle. A later Issue adding
+a fifth answer must keep that property: **a `?? []` anywhere on this path is criterion 4 broken.**
+
+Criterion 5 is the `key` field: `${hostId}:${sessionId}`. Session ids are assigned per host and
+nothing says they are globally unique, so the unified list is keyed on the machine as well.
+
+### Issue #3's two open decisions, and what this build does instead
+
+**Neither is answered.** `src/mesh/trust.ts` carries the reasoning; the short version:
+
+1. **How a host authenticates to a peer.** `establishPeerTrust()` still throws.
+   `meshCredentialSupplier()` returns `{kind: 'none'}` for every peer — as a VALUE, not a throw, so
+   the refusal reaches the screen as `not trusted yet` beside a named machine instead of a broken
+   page. Flags that would settle it (`--share-mesh-key`, `--trust-on-join`, and others) refuse with
+   exit code 6, the same pattern Issue #1 used for `--install-service`.
+2. **How a revocation reaches a peer.** `propagateRevocation()` still throws.
+
+**THIS BUILD NEVER ACCEPTS A FOREIGN DEVICE CREDENTIAL.** `verifyForeignCredential` is not called
+from any request path. Every device is authenticated by the host it OPENED, against that host's own
+store, on every request — Issue #5's criterion 5, unweakened. A peer request is HOST-to-host and
+carries a host's credential, never a device's, and the device cookie is explicitly NOT forwarded by
+`src/mesh/proxy.ts`. **So there is no path on which a peer serves a revoked device.**
+
+What that costs: with no answer to decision 1 a host holds no credential for any peer, so a joined
+mesh does not actually list a peer's agents today. Everything around that is built and tested; the
+one missing piece is a decision, and it is visible rather than papered over.
+
+**A later Issue must not "fix" this by picking an answer.** If it needs peer traffic to work, the
+decision goes to Issue #3 first.
+
+### Shutting down a host that has an upgraded socket
+
+`http.Server.close()` waits for every open connection to end, and an attach is a connection that by
+design does not end. Worse, Node **detaches** an upgraded socket from the server's connection set —
+so `closeAllConnections()` cannot see it — while still **counting** it, so once a socket has been
+upgraded the close callback can never fire. Measured, not assumed. `startServer` therefore tracks
+its upgraded sockets and destroys them on close, and resolves when the listening socket is released.
+Issue #2's attach socket inherits this; do not remove it.
 
 ### Not decided: whether a device credential ever expires on its own
 
