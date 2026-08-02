@@ -4,8 +4,8 @@
 
 ### Requirement: A single command shall start a host that serves with no further configuration
 
-The system shall provide one command that starts a host process and begins serving. Starting shall
-require no tunnel binary, no relay process, no account signup and no reverse proxy, and shall
+The system SHALL provide one command that starts a host process and begins serving. Starting SHALL
+require no tunnel binary, no relay process, no account signup and no reverse proxy, and SHALL
 require no second command before the host is reachable.
 
 #### Scenario: One command, and it is serving
@@ -17,10 +17,10 @@ require no second command before the host is reachable.
 
 ### Requirement: The host shall bind only the tailnet interface and loopback
 
-The system shall listen only on loopback and on addresses that Tailscale has reported, that lie
-inside Tailscale's own address space, and that are assigned to a local interface. The system shall
+The system SHALL listen only on loopback and on addresses that Tailscale has reported, that lie
+inside Tailscale's own address space, and that are assigned to a local interface. The system SHALL
 never listen on an unspecified (wildcard) address. Any candidate address failing any of those
-conditions shall be refused, and the refusal shall be stated.
+conditions SHALL be refused, and the refusal SHALL be stated.
 
 #### Scenario: A request on a LAN-only interface does not reach the host
 
@@ -45,8 +45,8 @@ conditions shall be refused, and the refusal shall be stated.
 
 ### Requirement: The host shall print, on startup, the address that works
 
-The system shall print on startup the address at which it is reachable. When a tailnet is up, the
-printed address shall be the tailnet address, and a request to exactly that address shall reach the
+The system SHALL print on startup the address at which it is reachable. When a tailnet is up, the
+printed address SHALL be the tailnet address, and a request to exactly that address SHALL reach the
 host.
 
 #### Scenario: The printed address is the one that works
@@ -57,9 +57,9 @@ host.
 
 ### Requirement: Loopback-only serving shall be stated plainly and distinguishably
 
-When no tailnet address can be bound, the system shall still start and serve on loopback, and shall
+When no tailnet address can be bound, the system SHALL still start and serve on loopback, and SHALL
 state in its startup output that only local access is available. The loopback-only case and the
-tailnet case shall be distinguishable from the startup output alone.
+tailnet case SHALL be distinguishable from the startup output alone.
 
 #### Scenario: Tailscale is absent, and the host says so
 
@@ -77,10 +77,10 @@ tailnet case shall be distinguishable from the startup output alone.
 
 ### Requirement: A status command shall report whether a host is running, where, and how many sessions
 
-The system shall provide a status command that, when a host is running, reports its serving address
+The system SHALL provide a status command that, when a host is running, reports its serving address
 and the number of sessions it owns and exits 0. When it has established that no host is running, it
-shall exit non-zero and report nothing that could be mistaken for a running host. When it cannot
-determine which is the case, it shall exit with a code distinct from both.
+SHALL exit non-zero and report nothing that could be mistaken for a running host. When it cannot
+determine which is the case, it SHALL exit with a code distinct from both.
 
 #### Scenario: Running and not running differ by exit code alone
 
@@ -99,7 +99,7 @@ determine which is the case, it shall exit with a code distinct from both.
 
 ### Requirement: The host shall survive the terminal that started it being closed
 
-The system shall continue serving, and its sessions shall continue running, after the terminal that
+The system SHALL continue serving, and its sessions SHALL continue running, after the terminal that
 started it is closed.
 
 #### Scenario: The terminal goes away and the address keeps serving
@@ -111,8 +111,8 @@ started it is closed.
 
 ### Requirement: Starting the host twice shall not produce two hosts
 
-The system shall permit at most one host per machine. A second invocation shall report that a host
-is already running and exit non-zero, and shall not start a second serving process.
+The system SHALL permit at most one host per machine. A second invocation SHALL report that a host
+is already running and exit non-zero, and SHALL not start a second serving process.
 
 #### Scenario: The second start refuses
 
@@ -129,7 +129,7 @@ is already running and exit non-zero, and shall not start a second serving proce
 
 ### Requirement: Every human-facing surface shall be usable one-handed on a 375px viewport
 
-The system's browser client shall, at a viewport 375 CSS pixels wide, produce no horizontal page
+The system's browser client SHALL, at a viewport 375 CSS pixels wide, produce no horizontal page
 scroll, present no interactive target smaller than 44 by 44 CSS pixels, and require no hover,
 right-click or drag to reach any content or action.
 
@@ -142,8 +142,8 @@ right-click or drag to reach any content or action.
 
 ### Requirement: An unsettled product decision shall be refused rather than answered
 
-The system shall not install itself as a login or system service. Any option that would imply
-returning after a reboot shall be refused with a distinct exit code and a statement of where the
+The system SHALL not install itself as a login or system service. Any option that would imply
+returning after a reboot SHALL be refused with a distinct exit code and a statement of where the
 decision belongs.
 
 #### Scenario: A persistence flag refuses
