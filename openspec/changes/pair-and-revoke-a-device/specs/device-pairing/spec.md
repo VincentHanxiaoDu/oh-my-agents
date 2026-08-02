@@ -4,9 +4,9 @@
 
 ### Requirement: A browser that has never been paired shall receive no agent data
 
-The system shall require a device credential for every route, including when the request arrives
-over the tailnet address. A browser holding no credential shall be shown a pairing prompt rather
-than any agent data, and shall be unable to list agents, attach to a session, or send input.
+The system SHALL require a device credential for every route, including when the request arrives
+over the tailnet address. A browser holding no credential SHALL be shown a pairing prompt rather
+than any agent data, and SHALL be unable to list agents, attach to a session, or send input.
 
 #### Scenario: An unpaired browser on the tailnet is shown a prompt, not agents
 
@@ -23,9 +23,9 @@ than any agent data, and shall be unable to list agents, attach to a session, or
 
 ### Requirement: The host shall produce a one-time pairing code on demand
 
-The system shall produce, on demand, a pairing code that a person can read off one screen and type
-into another. Entering that code in an unpaired browser shall pair that browser, after which it
-shall have access on later visits without anything being entered again.
+The system SHALL produce, on demand, a pairing code that a person can read off one screen and type
+into another. Entering that code in an unpaired browser SHALL pair that browser, after which it
+SHALL have access on later visits without anything being entered again.
 
 #### Scenario: A code pairs a browser, and later visits need nothing typed
 
@@ -40,9 +40,9 @@ shall have access on later visits without anything being entered again.
 
 ### Requirement: A pairing code shall be single-use and time-limited
 
-The system shall accept a pairing code at most once, and only within a bounded window from its
-creation. A code that has already paired a device, and a code past its window, shall not pair. The
-refusal for a spent or expired code shall be indistinguishable from the refusal for a mistyped one.
+The system SHALL accept a pairing code at most once, and only within a bounded window from its
+creation. A code that has already paired a device, and a code past its window, SHALL not pair. The
+refusal for a spent or expired code SHALL be indistinguishable from the refusal for a mistyped one.
 
 #### Scenario: A code that has already paired a device does not pair a second one
 
@@ -63,9 +63,9 @@ refusal for a spent or expired code shall be indistinguishable from the refusal 
 
 ### Requirement: Paired devices shall be listable and individually revocable
 
-The system shall list the devices paired with a host, each carrying something a person can use to
-tell one from another, and shall allow any single device to be revoked. An identifier matching more
-than one device shall revoke nothing.
+The system SHALL list the devices paired with a host, each carrying something a person can use to
+tell one from another, and SHALL allow any single device to be revoked. An identifier matching more
+than one device SHALL revoke nothing.
 
 #### Scenario: Two paired devices are distinguishable in the list
 
@@ -81,8 +81,8 @@ than one device shall revoke nothing.
 
 ### Requirement: Revoking one device shall not affect the others
 
-The system shall reject a revoked device's next request and return it to the pairing prompt. Every
-other paired device shall continue to be served and shall not be required to pair again.
+The system SHALL reject a revoked device's next request and return it to the pairing prompt. Every
+other paired device SHALL continue to be served and SHALL not be required to pair again.
 
 #### Scenario: The revoked device is rejected on its next request
 
@@ -98,10 +98,10 @@ other paired device shall continue to be served and shall not be required to pai
 
 ### Requirement: A refused request shall disclose nothing about what is running
 
-The system shall answer an unpaired or revoked caller with a response indistinguishable from the one
+The system SHALL answer an unpaired or revoked caller with a response indistinguishable from the one
 a paired caller receives for something that does not exist — in status code, headers, body and
-length alike. The response shall carry no session output, no agent name, no machine name, no host
-name and no count, and shall not disclose that authentication is what failed.
+length alike. The response SHALL carry no session output, no agent name, no machine name, no host
+name and no count, and SHALL not disclose that authentication is what failed.
 
 #### Scenario: The denial is byte-identical to an ordinary not-found
 
@@ -117,10 +117,10 @@ name and no count, and shall not disclose that authentication is what failed.
 
 ### Requirement: A pairing store that cannot be read shall deny
 
-The system shall distinguish a store that is absent, meaning no device has ever paired, from a store
+The system SHALL distinguish a store that is absent, meaning no device has ever paired, from a store
 whose contents could not be determined, meaning unreadable, corrupt, or of an unrecognised schema.
-Neither shall grant access, the two shall not share a value or a rendering, and a store that could
-not be read shall never be treated as an empty one nor overwritten with one.
+Neither SHALL grant access, the two SHALL not share a value or a rendering, and a store that could
+not be read SHALL never be treated as an empty one nor overwritten with one.
 
 #### Scenario: An unreadable store denies a credential that worked a moment ago
 
@@ -143,7 +143,7 @@ not be read shall never be treated as an empty one nor overwritten with one.
 
 ### Requirement: Pairing state shall survive a host restart
 
-The system shall persist pairing state on disk, in the directory the project's state-directory
+The system SHALL persist pairing state on disk, in the directory the project's state-directory
 helper resolves, so that a paired device is not required to pair again after the host is restarted.
 
 #### Scenario: A paired device does not pair again after a restart
@@ -154,9 +154,9 @@ helper resolves, so that a paired device is not required to pair again after the
 
 ### Requirement: A device credential shall be verifiable by a host that did not issue it
 
-The system shall make a device credential verifiable by any host holding the mesh key, rather than
+The system SHALL make a device credential verifiable by any host holding the mesh key, rather than
 only by the host that issued it, so that a device paired to one host in the mesh is not required to
-pair separately with each peer. Such verification shall establish authenticity only, not current
+pair separately with each peer. Such verification SHALL establish authenticity only, not current
 authorisation, because only the issuing host's store records a revocation.
 
 #### Scenario: A peer verifies a credential it never issued
@@ -173,7 +173,7 @@ authorisation, because only the issuing host's store records a revocation.
 
 ### Requirement: Every pairing surface shall be usable one-handed on a 375px viewport
 
-The system shall present every human-facing surface this capability adds so that it is usable
+The system SHALL present every human-facing surface this capability adds so that it is usable
 one-handed at a 375px-wide viewport: no horizontal page scroll, no interactive target smaller than
 44px, and nothing reachable only by hover, right-click or drag.
 
