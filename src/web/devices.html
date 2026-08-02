@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- CRITERION 9. Revoking a device is the thing you do on a phone, in a hurry, having just left
+         the other phone in a taxi. Every row's Revoke button is a full-width 48px target and the
+         confirmation is an inline second tap, not a hover menu and not a long-press. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%231c5fd0'/%3E%3Cpath d='M4 6l2.5 2L4 10M8.5 10.5h3.5' stroke='white' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+    <title>Paired devices</title>
+    <style>
+      :root {
+        --bg: #ffffff;
+        --fg: #16181d;
+        --muted: #5b6270;
+        --line: #d9dde5;
+        --card: #f6f7f9;
+        --accent: #1c5fd0;
+        --bad: #b02a2a;
+        --ok: #0d7a4a;
+        --tap: 44px;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #101216;
+          --fg: #e9ecf1;
+          --muted: #9aa3b2;
+          --line: #2a2f38;
+          --card: #181b21;
+          --accent: #6fa4ff;
+          --bad: #ff8080;
+          --ok: #4cc38a;
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+        overflow-x: hidden;
+        max-width: 100%;
+      }
+      main {
+        max-width: 34rem;
+        margin: 0 auto;
+        padding: 1rem 1rem calc(1.5rem + env(safe-area-inset-bottom));
+      }
+      h1 { font-size: 1.35rem; margin: 0.5rem 0 0.25rem; }
+      p { margin: 0.5rem 0; }
+      .muted { color: var(--muted); }
+      .wrap { overflow-wrap: anywhere; word-break: break-word; min-width: 0; }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 1rem;
+        margin: 0.75rem 0;
+        min-width: 0;
+      }
+      button, a.btn, summary {
+        min-height: var(--tap);
+        min-width: var(--tap);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        padding: 0.5rem 1rem;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: var(--bg);
+        color: var(--fg);
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+        text-decoration: none;
+        touch-action: manipulation;
+      }
+      button:focus-visible, a:focus-visible, summary:focus-visible {
+        outline: 3px solid var(--accent);
+        outline-offset: 2px;
+      }
+      /* Full width and 48px tall: a revoke is a deliberate act and the target is not a thing you
+         hit by accident with a thumb, nor one you have to aim at. */
+      .revoke { width: 100%; min-height: 48px; margin-top: 0.75rem; color: var(--bad); border-color: var(--bad); }
+      .revoke[data-armed="1"] { background: var(--bad); border-color: var(--bad); color: #ffffff; }
+      .id {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.9rem;
+        overflow-wrap: anywhere;
+      }
+      .tag {
+        display: inline-block;
+        padding: 0.2rem 0.55rem;
+        border-radius: 999px;
+        font-size: 0.8rem;
+        font-weight: 700;
+        border: 1px solid currentColor;
+      }
+      .tag.this { color: var(--ok); }
+      .tag.gone { color: var(--muted); }
+      .row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+      .note { min-height: 1.5rem; font-weight: 600; }
+      .note.bad { color: var(--bad); }
+      .scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Paired devices</h1>
+      <p class="muted wrap">
+        Every browser that has been paired with this host. Revoking one takes effect on that
+        device's next request and changes nothing on any other.
+      </p>
+      <p class="note wrap" id="note" role="status" aria-live="polite"></p>
+      <div id="list"></div>
+      <div class="row">
+        <button type="button" id="refresh">Refresh</button>
+        <a class="btn" href="/">Back</a>
+      </div>
+    </main>
+
+    <script>
+      // No framework, no bundler, no build step.
+      const list = document.getElementById('list');
+      const note = document.getElementById('note');
+
+      function say(text, bad) {
+        note.textContent = text;
+        note.className = 'note wrap' + (bad ? ' bad' : '');
+      }
+
+      function when(iso) {
+        const d = new Date(iso);
+        return isNaN(d.getTime()) ? iso : d.toLocaleString();
+      }
+
+      async function load() {
+        say('Loading…', false);
+        let res;
+        try {
+          res = await fetch('/api/devices', { cache: 'no-store' });
+        } catch (err) {
+          say('This page could not reach the host: ' + err, true);
+          return;
+        }
+        // A 404 here is what this host returns to a device it does not recognise. This browser has
+        // been revoked (or the host restarted onto a different store): go back to the prompt.
+        if (res.status === 404) {
+          window.location.assign('/pair');
+          return;
+        }
+        if (!res.ok) {
+          say('This host could not read its pairing store.', true);
+          return;
+        }
+        const data = await res.json();
+        render(data.devices || []);
+        say('', false);
+      }
+
+      function render(devices) {
+        list.replaceChildren();
+        if (devices.length === 0) {
+          const p = document.createElement('p');
+          p.className = 'muted';
+          p.textContent = 'No devices are paired.';
+          list.append(p);
+          return;
+        }
+        for (const d of devices) {
+          const card = document.createElement('div');
+          card.className = 'card';
+
+          const head = document.createElement('div');
+          head.className = 'row';
+          const name = document.createElement('strong');
+          name.textContent = d.label;
+          head.append(name);
+          if (d.isThisDevice) {
+            const t = document.createElement('span');
+            t.className = 'tag this';
+            t.textContent = 'this device';
+            head.append(t);
+          }
+          if (d.revokedAt) {
+            const t = document.createElement('span');
+            t.className = 'tag gone';
+            t.textContent = 'revoked';
+            head.append(t);
+          }
+          card.append(head);
+
+          const meta = document.createElement('p');
+          meta.className = 'muted wrap';
+          meta.textContent = 'paired ' + when(d.pairedAt) + (d.revokedAt ? ' · revoked ' + when(d.revokedAt) : '');
+          card.append(meta);
+
+          const id = document.createElement('p');
+          id.className = 'id scroll-x';
+          id.textContent = d.short;
+          card.append(id);
+
+          if (!d.revokedAt) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'revoke';
+            btn.textContent = d.isThisDevice ? 'Revoke this device (signs you out)' : 'Revoke';
+            // TWO TAPS, NOT A LONG PRESS AND NOT A HOVER MENU. The second tap is the confirmation
+            // and it is the same 48px target, so the whole interaction is reachable with a thumb.
+            btn.addEventListener('click', async () => {
+              if (btn.dataset.armed !== '1') {
+                btn.dataset.armed = '1';
+                btn.textContent = 'Tap again to revoke';
+                setTimeout(() => {
+                  if (btn.dataset.armed === '1') {
+                    btn.dataset.armed = '0';
+                    btn.textContent = d.isThisDevice ? 'Revoke this device (signs you out)' : 'Revoke';
+                  }
+                }, 4000);
+                return;
+              }
+              btn.disabled = true;
+              try {
+                const res = await fetch('/api/devices/revoke', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ id: d.id }),
+                  cache: 'no-store',
+                });
+                if (!res.ok) {
+                  say('That device was not revoked.', true);
+                  btn.disabled = false;
+                  return;
+                }
+              } catch (err) {
+                say('This page could not reach the host: ' + err, true);
+                btn.disabled = false;
+                return;
+              }
+              await load();
+            });
+            card.append(btn);
+          }
+
+          list.append(card);
+        }
+      }
+
+      document.getElementById('refresh').addEventListener('click', load);
+      load();
+    </script>
+  </body>
+</html>
