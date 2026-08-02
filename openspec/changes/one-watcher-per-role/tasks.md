@@ -29,4 +29,9 @@
 - [x] Point `.workflow/{dev,qa,product,ops}/AGENT.md` at `./bin/watch.sh` with the reason and the
       three answers
 - [x] Document the guard in `README.md`
+- [x] Name `bin/` explicitly as THE project-owned location for machinery — a reusable convention
+      rather than a one-off for watchers — with the `make ci` seam that lets a project-owned check
+      reach CI at all, so Issue #12 follows it instead of inventing a second answer
+- [x] Run `openspec validate one-watcher-per-role --strict` and confirm `is valid`; no gate runs it,
+      so green gates do not mean the change is archivable
 - [x] Run `./.workflow/bin/run-gates.sh` from the worktree root on a clean tree
