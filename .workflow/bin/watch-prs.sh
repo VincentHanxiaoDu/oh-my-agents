@@ -20,9 +20,46 @@
 # silent through a red gate, and silence is indistinguishable from "still running" — which is how an
 # agent waits forever on something that already failed.
 #
+#   WATCHING  <role>  <n> open  —  poll #k        the watch is ALIVE and was answered
+#
+# **A DEAD WATCH AND A QUIET QUEUE LOOK IDENTICAL, AND THAT IS THE WORST STATE THIS FILE CAN BE IN.**
+# Every other emission here says something happened. `WATCHING` is the one that says *nothing*
+# happened and the loop is still standing — because without it, silence has two meanings and the
+# role that reads it cannot tell "no work" from "your watch died an hour ago". It is deliberately
+# infrequent (every tenth poll, so ~10 minutes at the default interval): often enough that its
+# absence is diagnosable, rare enough that it does not bury the events it accompanies.
+#
 # Usage: watch-prs.sh <role> [interval-seconds]      default interval: 60
+#        watch-prs.sh <role> --sweep                 ONE pass over the board, then exit
 #        watch-prs.sh --self-test
 set -euo pipefail
+
+# A DEATH MUST BE LOUD. This is the second half of the heartbeat and it is the more important half:
+# the heartbeat says the watch is alive, and this says the watch has stopped, at the moment it stops
+# and with the number that explains it. Before it, the process vanished and the role went on waiting
+# — three outages for the `qa` role in one session, found only by sweeping every open pull request
+# by hand hours later, by which time two heads had moved under reviews already posted.
+#
+# EXIT 0 IS SILENT ON PURPOSE. `--sweep` and `--main-state` finish normally and have nothing to
+# report; announcing those would train the reader to skim the line that matters.
+trap 'wrc=$?; [ "$wrc" -eq 0 ] || echo "WATCH DIED (exit $wrc) — this role is now BLIND and a dead watch looks exactly like a quiet queue. Restart it, then run: .workflow/bin/watch-prs.sh ${1:-<role>} --sweep" >&2' EXIT
+
+# SIGURG IS IGNORED, AND WHAT THAT IS AND IS NOT EVIDENCE FOR IS RECORDED HERE HONESTLY.
+# The observed deaths carried **exit 144**, which is `128 + 16` — killed by signal 16, `SIGURG` on
+# this platform. Nothing in this file exits 144 on its own. SIGURG is effectively nobody's signal
+# any more: the Go runtime took it over for goroutine preemption and sends it constantly, and `gh`
+# is a Go binary.
+#
+# **This line is cheap insurance and NOT the fix, and it must not be mistaken for the fix.** SIGURG's
+# POSIX default action is already *ignore*, so a plain `kill -URG` cannot kill a bash process, and a
+# self-test arm asserting that it survives one passes just as happily with this line deleted — a
+# vacuous test, which is worse than none. The reachable killer was an unguarded command substitution
+# on a branch this clone had never fetched; see the note at the `authors=` line, which is where the
+# driven regression test points.
+#
+# INT AND TERM ARE DELIBERATELY NOT TRAPPED. A watch that cannot be stopped is worse than one that
+# dies: whoever starts it must be able to end it.
+trap '' URG
 
 case "${1:-}" in
   -*) [ "$1" = "--self-test" ] || [ "$1" = "--main-state" ] || {
@@ -106,18 +143,113 @@ CASES
   esac
   rm -rf "$tmp"
 
-  [ "$rc" -eq 0 ] && echo "self-test passed: every outcome emits including the failing ones, main's colour has three answers plus an outage, unknown roles refuse, and a failed poll does not end the watch"
+  # A PULL REQUEST ON A BRANCH THIS CLONE HAS NEVER FETCHED MUST NOT END THE WATCH.
+  #
+  # THIS IS THE REGRESSION TEST FOR THE OUTAGE, and it is driven by making `git` fail the way an
+  # unfetched branch makes it fail — not by grepping for the `gh api` call that replaced it. The
+  # previous code asked git about `origin/<branch>` for every foreign pull request; a branch opened
+  # after the last fetch is not there, git exits non-zero, and `set -euo pipefail` turned that into
+  # the death of the whole watch with its stderr already routed to /dev/null.
+  #
+  # THE STUB `git` FAILS ON EVERYTHING, which is stronger than the real fault needs: if any part of
+  # a poll still depends on this clone answering, this arm fails and says so.
+  tmp=$(mktemp -d)
+  cat > "$tmp/gh" <<'STUB'
+#!/usr/bin/env bash
+# One open pull request, on a branch belonging to another role, with an Agent: trailer.
+case "$*" in
+  *"pulls/7/commits"*) echo 'feat(x): y'; echo 'Agent: product' ;;
+  *"state=closed"*)    echo '[]' ;;
+  *"pulls?state=open"*) echo '[{"number":7,"title":"t","head":{"ref":"product/feat/7-x","sha":"deadbee"}}]' ;;
+  *"/status"*)         echo '{"statuses":[]}' ;;
+  *)                   echo '[]' ;;
+esac
+STUB
+  chmod +x "$tmp/gh"
+  printf '#!/usr/bin/env bash\nexit 128\n' > "$tmp/git"; chmod +x "$tmp/git"
+  cp "${BASH_SOURCE[0]}" "$tmp/watch-prs.sh"
+  ( PATH="$tmp:$PATH" REPO=x/y bash "$tmp/watch-prs.sh" dev 2 >"$tmp/out" 2>&1 & echo $! > "$tmp/pid" )
+  sleep 4
+  local wpid; wpid=$(cat "$tmp/pid")
+  kill -0 "$wpid" 2>/dev/null \
+    || { echo "SELF-TEST FAIL: a pull request on an unfetched branch ended the watch — this is the outage, and the role goes blind" >&2; rc=1; }
+  out=$(cat "$tmp/out" 2>/dev/null || echo "")
+  case "$out" in
+    *NEEDS-REVIEW*) : ;;
+    *) echo "SELF-TEST FAIL: a foreign pull request awaiting a verdict emitted no NEEDS-REVIEW (got: $out)" >&2; rc=1 ;;
+  esac
+  # AND THE HEARTBEAT MUST HAVE ARRIVED. Its entire purpose is that its ABSENCE is readable, which
+  # is only true if its presence is guaranteed while the watch lives.
+  case "$out" in
+    *WATCHING*) : ;;
+    *) echo "SELF-TEST FAIL: a live watch emitted no WATCHING line — silence would again mean both 'no work' and 'dead'" >&2; rc=1 ;;
+  esac
+  kill "$wpid" 2>/dev/null || true
+  rm -rf "$tmp"
+
+  # A DEATH MUST ANNOUNCE ITSELF. Driven by making the very first lookup fail in a mode the loop
+  # does not catch, so the process really does exit non-zero.
+  #
+  # DRIVEN IN A DIRECTORY WITH NO REMOTE, so the exit is `resolve_repo`'s refusal and the loop is
+  # never entered. An earlier version of this arm cleared `REPO` but left the real `git` on PATH in
+  # the real repository — so the remote resolved, the watch started for real, and the self-test hung
+  # until it was killed by hand. A test that hangs reports nothing, which is this file's subject.
+  tmp=$(mktemp -d)
+  cp "${BASH_SOURCE[0]}" "$tmp/watch-prs.sh"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$tmp/git"; chmod +x "$tmp/git"
+  out=$( cd "$tmp" && PATH="$tmp:$PATH" REPO="" bash "$tmp/watch-prs.sh" dev 2>&1 || true )
+  case "$out" in
+    *"WATCH DIED"*) : ;;
+    *) echo "SELF-TEST FAIL: the watch exited non-zero without saying so — a silent death is the state this file exists to remove (got: $out)" >&2; rc=1 ;;
+  esac
+  rm -rf "$tmp"
+
+  # A SWEEP MUST TERMINATE. It is the fallback for a dead watch, so a sweep that hangs like the
+  # watch it replaces leaves the role with no way to find its work at all.
+  tmp=$(mktemp -d)
+  printf '#!/usr/bin/env bash\necho "[]"\n' > "$tmp/gh"; chmod +x "$tmp/gh"
+  cp "${BASH_SOURCE[0]}" "$tmp/watch-prs.sh"
+  ( PATH="$tmp:$PATH" REPO=x/y bash "$tmp/watch-prs.sh" dev --sweep >"$tmp/sout" 2>&1 & echo $! > "$tmp/spid" )
+  sleep 3
+  if kill -0 "$(cat "$tmp/spid")" 2>/dev/null; then
+    kill "$(cat "$tmp/spid")" 2>/dev/null || true
+    echo "SELF-TEST FAIL: --sweep did not exit — it is a watch, not a sweep" >&2; rc=1
+  fi
+  # A SWEEP THAT COULD NOT READ THE BOARD MUST NOT EXIT 0. Exit 0 with no events means "nothing is
+  # waiting on you", and an outage is not that.
+  printf '#!/usr/bin/env bash\necho boom >&2\nexit 1\n' > "$tmp/gh"
+  ( PATH="$tmp:$PATH" REPO=x/y bash "$tmp/watch-prs.sh" dev --sweep >/dev/null 2>&1 ) \
+    && { echo "SELF-TEST FAIL: a sweep whose lookup failed exited 0 — an outage would read as an empty board" >&2; rc=1; }
+  rm -rf "$tmp"
+
+  [ "$rc" -eq 0 ] && echo "self-test passed: every outcome emits including the failing ones, main's colour has three answers plus an outage, unknown roles refuse, a failed poll does not end the watch, an unfetched branch does not end it either, the heartbeat arrives, a death announces itself, and --sweep terminates and refuses to call an outage an empty board"
   return $rc
 }
 
 [ "${1:-}" = "--self-test" ] && { self_test; exit $?; }
 
-role=${1:?usage: watch-prs.sh <role> [interval-seconds] | --self-test}
-interval=${2:-60}
+role=${1:?usage: watch-prs.sh <role> [interval-seconds] | <role> --sweep | --self-test}
 case "$role" in dev|qa|product|ops|pm|--main-state) : ;; *) echo "::error::'$role' is not a role." >&2; exit 2 ;; esac
+
+# ONE PASS, ON DEMAND. The same code that feeds the monitor also answers "what is waiting on me
+# right now", and it has to be the same code or the two answers drift and the on-demand one is the
+# one nobody tests. A role runs this at the start of every round and whenever its watch has gone
+# quiet, so **being woken is an optimisation and never the only way work is found.** A process in
+# which a dead background process can strand fourteen pull requests is not a process; it is a
+# process plus a single point of failure that nothing watches.
+sweep=no
+interval=60
+case "${2:-}" in
+  --sweep) sweep=yes ;;
+  "")      : ;;
+  -*)      echo "::error::unknown option '$2'. This is a typo, not an interval — refusing." >&2; exit 2 ;;
+  *)       interval=$2 ;;
+esac
 
 resolve_repo
 seen=""
+polls=0
+npr="?"
 
 emit() { # emit <state> <number> <title> [detail]
   local key="$1|$2|${4:-}"
@@ -160,8 +292,13 @@ while true; do
   # separately from REST. When it did, every such command returned nothing rather than an error.
   if ! prs=$(gh api "repos/$REPO/pulls?state=open&per_page=100" 2>&1); then
     echo "LOOKUP FAILED: $(printf '%s' "$prs" | tr '\n' ' ' | cut -c1-160)"
+    # A SWEEP THAT COULD NOT READ THE BOARD MUST EXIT NON-ZERO. It is answering a question asked
+    # once, and a caller that sees exit 0 and no events concludes there is nothing waiting on it —
+    # which is this whole file's subject, arriving through its own front door.
+    [ "$sweep" = no ] || exit 1
     sleep "$interval"; continue
   fi
+  npr=$(printf '%s' "$prs" | jq -r 'length' 2>/dev/null || echo '?')
 
   while IFS=$'\t' read -r num title branch sha; do
     [ -n "$num" ] || continue
@@ -174,7 +311,28 @@ while true; do
     case "$branch" in
       "$role"/*) : ;;
       *)
-        authors=$(git log --format=%B "origin/main..origin/$branch" 2>/dev/null | sed -n 's/^Agent:[[:space:]]*//p' | sort -u)
+        # THE AUTHORS COME FROM THE API, NOT FROM THIS CLONE — and this line is the whole bug.
+        #
+        # It used to read `git log "origin/main..origin/$branch"`. **A pull request opened after
+        # this clone last fetched has no `origin/<branch>` here, so git exits non-zero, and under
+        # `set -euo pipefail` a failing command substitution ENDS THE WATCH.** stderr was routed to
+        # /dev/null, so it died without a word. That is the whole of the "the watcher keeps dying"
+        # report: it was not random, it fired on the first foreign branch it had never fetched, and
+        # a role learned about it by noticing hours later that nothing had arrived.
+        #
+        # It also explains the shape of the outages exactly. It killed the watch AFTER emitting
+        # events (branches already fetched were processed first) and sometimes BEFORE emitting any
+        # (the first branch examined was new). Running the script by hand survived because that
+        # clone happened to have the branches. The self-test passed because it stubs `gh` and never
+        # reaches git at all. **Every check anyone ran was green and every one of them was looking
+        # somewhere else.**
+        #
+        # The API is also the more correct source, independently of the crash: the gate derives
+        # independence from the pull request's own commit list, and a merge-base range in a local
+        # clone is a different set of commits. A reviewer was wrongly cleared as independent by
+        # exactly that difference and had to withdraw a verdict it had already posted.
+        authors=$(gh api "repos/$REPO/pulls/$num/commits" --paginate --jq '.[].commit.message' 2>/dev/null \
+                  | sed -n 's/^Agent:[[:space:]]*//p' | sort -u || echo "")
         if [ -n "$authors" ] && ! printf '%s\n' "$authors" | grep -qi "^$role"; then
           # Only when it is actually waiting on one.
           rst=$(gh api "repos/$REPO/commits/$sha/status" --jq '[.statuses[]?|select(.context|test("Reviewed by an agent"))][0].state // ""' 2>/dev/null || echo "")
@@ -272,6 +430,18 @@ while true; do
       [ -n "$mainstate" ] || mainstate=$(main_state)
       emit MERGED "$num" "$title" "you merged this — $mainstate"
     done < <(printf '%s' "$merged" | jq -r '.[] | select(.merged_at != null) | [.number, .title, .head.ref] | @tsv' 2>/dev/null || true)
+  fi
+
+  # A SWEEP IS ONE PASS AND THEN IT IS OVER.
+  [ "$sweep" = no ] || exit 0
+
+  # THE HEARTBEAT. Emitted on the first poll and every tenth after it — the first so that starting
+  # the watch is observable at all (a watch shot dead in its first second previously produced no
+  # output file, and "it never wrote anything" was indistinguishable from "there was nothing to
+  # say"), and every tenth so that its absence is a diagnosis rather than a mood.
+  polls=$((polls + 1))
+  if [ "$polls" -eq 1 ] || [ $((polls % 10)) -eq 0 ]; then
+    echo "WATCHING  $role  ${npr:-?} open  —  poll #$polls, nothing new. If this line stops arriving, this watch is DEAD: restart it and run '.workflow/bin/watch-prs.sh $role --sweep' to find what it missed."
   fi
 
   sleep "$interval"

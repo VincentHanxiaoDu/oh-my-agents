@@ -56,6 +56,18 @@ run_check() {
     # waiting for new work with its own branch red and nothing saying so.
     grep -q 'watch-prs\.sh' "$f" \
       || { echo "::error::$role.md never watches its own PRs — a red gate or a requested change would never reach it" >&2; rc=1; }
+    # AND IT MUST NOT DEPEND ON THAT WATCH SURVIVING. A monitor is a process and processes end, and
+    # a dead one is indistinguishable from a quiet queue — measured: a watcher died three times in
+    # one session, the role went on believing its board was clear, and fourteen pull requests
+    # accumulated behind it with eight of them waiting on a review nobody had been told to do.
+    #
+    # A prompt that only says "start a monitor" has built the process on a single point of failure
+    # that nothing watches. So the fallback must be IN THE PROMPT: a role has to know the watch can
+    # die, know what aliveness looks like, and have a way to answer the question without it.
+    grep -q -- '--sweep' "$f" \
+      || { echo "::error::$role.md never tells the role to sweep the board, so a dead monitor strands its work silently and nothing recovers it" >&2; rc=1; }
+    grep -q 'WATCHING' "$f" \
+      || { echo "::error::$role.md never mentions the WATCHING heartbeat — the role cannot tell a live watch from a dead one, and silence would mean both" >&2; rc=1; }
   done
 
   # R4 — CLOSURE AUTHORITY LIVES IN THE PROMPT OF THE ROLE THAT CLOSES, and nowhere else.
@@ -174,7 +186,7 @@ run_check() {
       || { echo "::error::$role.md has no @.workflow/<role>/AGENT.md injection point — a project could only extend it by editing a file the installer overwrites" >&2; rc=1; }
   done
 
-  [ "$rc" -eq 0 ] && echo "prompts ok: every role pulls its own queue and fans out uncapped, closure authority is stated where it is exercised, criteria cannot be softened, every working role watches its queue and its own PRs, and every command has its project injection point"
+  [ "$rc" -eq 0 ] && echo "prompts ok: every role pulls its own queue and fans out uncapped, closure authority is stated where it is exercised, criteria cannot be softened, every working role watches its queue and its own PRs and can sweep the board when that watch dies, and every command has its project injection point"
   return "$rc"
 }
 

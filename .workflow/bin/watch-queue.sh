@@ -10,15 +10,29 @@
 #
 #   NEW  #42  feat(x): ...        an item that was not in the queue on the previous poll
 #   LOOKUP FAILED: <reason>       the poll could not be answered
+#   WATCHING <role> — poll #k     the watch is ALIVE and was answered
+#   WATCH DIED (exit n)           it has stopped, with the number that explains it
 #
 # **Silence is not success.** If this only emitted new work, an expired token or an exhausted API
 # quota would look exactly like a quiet queue, and a role would sit idle believing it was done. So a
 # failed poll is an event too. It does not kill the watch — a transient outage should wake you, not
 # end the loop.
 #
+# **AND SILENCE IS NOT ALIVENESS EITHER.** A watch that emits only on change is indistinguishable
+# from a watch that has stopped existing — which is not hypothetical here: the sibling watcher died
+# repeatedly and the role it served sat idle believing its queue was empty. So this one says it is
+# still standing, sparsely, and says it has died, loudly.
+#
 # Usage: watch-queue.sh <role> [interval-seconds]     default interval: 60
 #        watch-queue.sh --self-test
 set -euo pipefail
+
+# THE SAME PAIR AS watch-prs.sh, FOR THE SAME REASON — see the long note there. A death is announced
+# with the exit code that explains it, and SIGURG is ignored because the observed deaths carried
+# exit 144 (`128 + 16`) and a preemption signal from a Go parent must not be able to end a watch.
+# INT and TERM stay untrapped: whoever starts this must be able to stop it.
+trap 'wrc=$?; [ "$wrc" -eq 0 ] || echo "WATCH DIED (exit $wrc) — this role is now BLIND, and a dead watch looks exactly like an empty queue. Restart it, and read your queue directly with .workflow/bin/queue.sh ${1:-<role>} before assuming there is nothing to do." >&2' EXIT
+trap '' URG
 
 case "${1:-}" in
   -*) [ "$1" = "--self-test" ] || {
@@ -92,7 +106,24 @@ STUB
   [ "$n" -eq 3 ] \
     || { echo "SELF-TEST FAIL: expected 3 NEW lines across repeated polls of a queue holding 3 distinct items, got $n: $out" >&2; rc=1; }
 
-  [ "$rc" -eq 0 ] && echo "self-test passed: a failed poll emits and does not end the watch, unknown roles refuse, and an item is announced once"
+  # THE HEARTBEAT MUST ARRIVE WHILE THE WATCH IS ALIVE. Asserted on the run above, which polled an
+  # empty-of-new-work queue repeatedly — exactly the condition under which the old build said
+  # nothing at all and a dead watch was indistinguishable from a quiet one.
+  case "$out" in
+    *WATCHING*) : ;;
+    *) echo "SELF-TEST FAIL: a live watch emitted no WATCHING line — silence would again mean both 'no work' and 'dead'" >&2; rc=1 ;;
+  esac
+
+  # AND A DEATH MUST ANNOUNCE ITSELF, driven by an exit the loop cannot swallow: an unknown role,
+  # which refuses with 2 before the loop is entered.
+  local dout
+  dout=$( bash "${BASH_SOURCE[0]}" not-a-role 1 2>&1 || true )
+  case "$dout" in
+    *"WATCH DIED"*) : ;;
+    *) echo "SELF-TEST FAIL: the watch exited non-zero without saying so — a silent death is the state this file exists to remove (got: $dout)" >&2; rc=1 ;;
+  esac
+
+  [ "$rc" -eq 0 ] && echo "self-test passed: a failed poll emits and does not end the watch, unknown roles refuse, an item is announced once, the heartbeat arrives, and a death announces itself"
   return $rc
 }
 
@@ -109,6 +140,7 @@ esac
 # Announce what is already there on the first poll, so a role that starts the watch before reading
 # its queue is not left waiting for a change that has already happened.
 seen=""
+polls=0
 
 while true; do
   out=""
@@ -126,6 +158,14 @@ while true; do
     seen="$seen|$line|"
     echo "NEW $line"
   done < <(printf '%s\n' "$out" | grep -E '^  #[0-9]+' || true)
+
+  # THE HEARTBEAT: first poll, then every tenth. The first makes starting the watch observable at
+  # all; the rest make its absence a diagnosis instead of a guess. Sparse on purpose — a heartbeat
+  # that arrives every minute is scrolled past, and one that is scrolled past cannot be missed.
+  polls=$((polls + 1))
+  if [ "$polls" -eq 1 ] || [ $((polls % 10)) -eq 0 ]; then
+    echo "WATCHING  $role  —  poll #$polls, queue read, nothing new. If this line stops arriving, this watch is DEAD: restart it and read '.workflow/bin/queue.sh $role' yourself."
+  fi
 
   sleep "$interval"
 done
