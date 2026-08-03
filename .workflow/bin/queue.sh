@@ -171,6 +171,51 @@ my_prs() {
   [ "$any" -eq 1 ] || printf '  (none)\n'
 }
 
+# REVIEWS ARE WORK, AND UNTIL NOW THEY WERE IN NOBODY'S QUEUE.
+#
+# THIS IS THE DEADLOCK THIS FUNCTION EXISTS TO END, and it was reached: eleven pull requests open,
+# eight of them red for want of an independent verdict, every one built by `dev` and `product` — so
+# `qa` was the only role the gate would accept. `queue.sh qa` printed two headings and `(none)`
+# under both, correctly, because it routes pull requests by branch type and every one of those was
+# a `feat/*` belonging to product's merge queue. qa read its queue, learned it had no work, and
+# stopped. **It was the only role that could unblock the entire board.**
+#
+# Review reached a role through exactly one channel: a `NEEDS-REVIEW` event from a live watcher.
+# That is a push channel, and a push channel is a thing that can be missed — the watcher dies, the
+# session ends, the agent restarts, and the work becomes invisible with no trace that it ever
+# existed. **`queue.sh` is the pull channel and the prompts call it "your queue", so anything absent
+# from it is work the process cannot recover.** A queue that answers "nothing" while eight pull
+# requests wait on you is not an empty queue; it is a wrong answer with a zero exit code.
+#
+# INDEPENDENCE IS DERIVED EXACTLY AS THE GATE DERIVES IT — the `Agent:` trailers of the pull
+# request's own commit list, over the API. Not a merge-base range in this clone: those are
+# different sets of commits, and a reviewer cleared by the second one had to withdraw a verdict it
+# had already posted. If this offers you a pull request, the gate will accept your verdict on it.
+reviews_waiting() {
+  local role=$1 num sha title authors rst prs any=0
+  resolve_repo
+  prs=$(api --paginate "repos/$REPO/pulls?state=open&per_page=100")
+  printf '\nPULL REQUESTS AWAITING AN INDEPENDENT VERDICT — you authored none of their commits, so the gate will accept yours:\n'
+  while IFS=$'\t' read -r num sha title; do
+    [ -n "$num" ] || continue
+    authors=$(api --paginate "repos/$REPO/pulls/$num/commits" \
+              | jq -r '.[].commit.message' 2>/dev/null | sed -n 's/^Agent:[[:space:]]*//p' | sort -u)
+    # NO TRAILER MEANS INDEPENDENCE CANNOT BE ESTABLISHED, WHICH IS NOT THE SAME AS "YOURS TO DO".
+    # The naming gate reports that defect with its remedy and it is not this queue's to duplicate.
+    [ -n "$authors" ] || continue
+    if printf '%s\n' "$authors" | grep -qx "$role"; then continue; fi
+    rst=$(api "repos/$REPO/commits/$sha/status" \
+          | jq -r '[.statuses[]?|select(.context|test("Reviewed by an agent"))][0].state // ""' 2>/dev/null || echo "")
+    # ALREADY GREEN MEANS ALREADY REVIEWED FOR THIS HEAD. Anything else — red, pending, or absent —
+    # is waiting, and a red one is waiting on a fresh verdict just as much as a missing one is.
+    if [ "$rst" = success ]; then continue; fi
+    any=1
+    printf '  #%-4s %-46s  run /review-pr %-4s (built by %s)\n' \
+      "$num" "$(printf '%s' "$title" | cut -c1-46)" "$num" "$(printf '%s' "$authors" | tr '\n' ',' | sed 's/,$//')"
+  done < <(printf '%s' "$prs" | jq -r '.[] | [.number, .head.sha, .title] | @tsv' 2>/dev/null || true)
+  [ "$any" -eq 1 ] || printf '  (none)\n'
+}
+
 # WHAT IS ALREADY CLAIMED, DERIVED FROM THE BRANCH NAMES. `<role>/<type>/<issue>-<slug>` carries the
 # Issue number, so a branch existing IS the claim — there is no label to set, no comment to post and
 # nothing to expire. State is stored once, which is the whole reason the naming convention is a gate.
@@ -229,7 +274,8 @@ role_queue() {
              | select([.labels[].name] | any(startswith("type:")))
              | select([.labels[].name] | index("blocked") | not)
              | "  #\(.number)  \(.title)"' --unbuilt
-      my_prs "dev/*" ;;
+      my_prs "dev/*"
+      reviews_waiting dev ;;
     qa)
       # NOT EVERY BUG IS YOURS YET. An Issue with no branch has nothing to verify — it is dev's to
       # build first. Listing it under "to verify" is the same defect as the product arm one layer
@@ -239,13 +285,15 @@ role_queue() {
         '.[] | select(.pull_request==null)
              | select([.labels[].name] | index("type:bug") or index("type:chore"))
              | "  #\(.number)  \(.title)"' --landed 
-      my_prs "*/fix/*|*/bug/*|*/chore/*|*/docs/*|*/test/*|*/ci/*|*/build/*|*/refactor/*|*/perf/*" "PULL REQUESTS TO VERIFY, MERGE AND CLOSE — whoever wrote them" ;;
+      my_prs "*/fix/*|*/bug/*|*/chore/*|*/docs/*|*/test/*|*/ci/*|*/build/*|*/refactor/*|*/perf/*" "PULL REQUESTS TO VERIFY, MERGE AND CLOSE — whoever wrote them"
+      reviews_waiting qa ;;
     product)
       emit "FEATURES WHOSE WORK HAS LANDED — UAT on main and CLOSE (already verified ones are dropped):" \
         '.[] | select(.pull_request==null)
              | select([.labels[].name] | index("type:feature"))
              | "  #\(.number)  \(.title)"' --landed 
-      my_prs "*/feat/*|*/spec/*" "PULL REQUESTS TO UAT, MERGE AND CLOSE — whoever wrote them" ;;
+      my_prs "*/feat/*|*/spec/*" "PULL REQUESTS TO UAT, MERGE AND CLOSE — whoever wrote them"
+      reviews_waiting product ;;
     ops)
       emit "OPEN PULL REQUESTS — CI and gate health:" \
         '.[] | select(.pull_request!=null) | "  #\(.number)  \(.title)"' ;;
@@ -301,7 +349,40 @@ self_test() {
   grep -q 'LOOKUP FAILURE and NOT a statement' "${BASH_SOURCE[0]}" \
     || { echo "SELF-TEST FAIL: a failed lookup is not distinguished from an empty queue" >&2; rc=1; }
 
-  [ "$rc" -eq 0 ] && echo "self-test passed: unknown roles refuse, every role has a queue, a failed lookup is not an empty queue"
+  # A PULL REQUEST WAITING ON A VERDICT MUST APPEAR IN THE QUEUE OF A ROLE THAT CAN GIVE IT, AND IN
+  # NO OTHER. This is the deadlock arm. Driven end to end against a stub `gh`, because the version
+  # of this defect that actually occurred was not "the code is wrong" — every function did exactly
+  # what it said — it was that no arm of this script asked the question at all, and eight pull
+  # requests were therefore in nobody's queue while every role's exit code was 0.
+  #
+  # BOTH DIRECTIONS ARE ASSERTED. Offering it to the role that built it is the same defect wearing
+  # the opposite sign: the gate would refuse that verdict, so the role would do the work twice and
+  # still be blocked. A one-directional check passes on a function that returns everything.
+  local tmp out
+  tmp=$(mktemp -d)
+  cat > "$tmp/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *"pulls/9/commits"*)  echo '[{"commit":{"message":"feat(x): y\n\nAgent: dev"}}]' ;;
+  *"pulls?state=open"*) echo '[{"number":9,"head":{"ref":"dev/feat/9-x","sha":"cafe"},"title":"feat(x): y"}]' ;;
+  *"/status"*)          echo '{"statuses":[]}' ;;
+  *)                    echo '[]' ;;
+esac
+STUB
+  chmod +x "$tmp/gh"
+  out=$( PATH="$tmp:$PATH" REPO=x/y bash "${BASH_SOURCE[0]}" qa 2>&1 || true )
+  case "$out" in
+    *"/review-pr 9"*) : ;;
+    *) echo "SELF-TEST FAIL: a pull request awaiting an independent verdict was in NOBODY's queue — this is the deadlock: qa was the only role that could review, its queue said (none), and it stopped (got: $out)" >&2; rc=1 ;;
+  esac
+  out=$( PATH="$tmp:$PATH" REPO=x/y bash "${BASH_SOURCE[0]}" dev 2>&1 || true )
+  case "$out" in
+    *"/review-pr 9"*) echo "SELF-TEST FAIL: a pull request was offered for review to a role that authored it — the gate refuses that verdict, so the work would be done twice and stay blocked" >&2; rc=1 ;;
+    *) : ;;
+  esac
+  rm -rf "$tmp"
+
+  [ "$rc" -eq 0 ] && echo "self-test passed: unknown roles refuse, every role has a queue, a failed lookup is not an empty queue, and a pull request awaiting a verdict reaches a role that can give it and no role that cannot"
   return $rc
 }
 
