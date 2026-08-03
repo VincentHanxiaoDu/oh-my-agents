@@ -101,6 +101,17 @@ run_check() {
       || { echo "::error::$role.md never tells the role to mark its comments with [<role>] — queue.sh cannot see what it has already done, and will offer the work again" >&2; rc=1; }
   done
 
+  # A RELEASE VERDICT MUST BE RECORDED WHERE THE OWNER CAN FIND IT, NOT SAID IN A REPLY.
+  # Measured: "do not ship bbee48f, four blockers" was formed correctly and reached the owner only
+  # because they happened to be reading that window. The sha was in no file, no Issue, no label.
+  # The owner has one derived view — `queue.sh owner` — and it is fed by the `blocks:release` label
+  # and by a `[product]` comment naming RELEASE. A prompt that does not say so produces verdicts
+  # that exist only in a terminal.
+  grep -q 'blocks:release' "$dir/product-workflow.md" 2>/dev/null \
+    || { echo "::error::product-workflow.md never says to label a blocker 'blocks:release', so nothing a release waits on reaches the owner's queue" >&2; rc=1; }
+  grep -qi 'AskUserQuestion' "$dir/product-workflow.md" 2>/dev/null \
+    || { echo "::error::product-workflow.md does not tell product to ask the owner — a decision they were never asked for is not one they made" >&2; rc=1; }
+
   # R4 — CLOSURE AUTHORITY LIVES IN THE PROMPT OF THE ROLE THAT CLOSES, and nowhere else.
   grep -qi 'you close bugs and chores' "$dir/qa-workflow.md" 2>/dev/null \
     || { echo "::error::qa.md does not state that qa closes bugs and chores" >&2; rc=1; }

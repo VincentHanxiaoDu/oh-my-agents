@@ -4,7 +4,7 @@
 # PRD R3: an agent must be able to compute its own queue. There is no owner:* label, no assignment
 # message, no coordinator-maintained list. State is stored once.
 #
-# Usage: queue.sh <role>          # dev | qa | product | ops | pm
+# Usage: queue.sh <role>          # dev | qa | product | ops | pm | owner
 #        queue.sh --self-test
 set -euo pipefail
 
@@ -355,6 +355,50 @@ role_queue() {
              | "  #\(.number)  \(.title)"' --landed 
       my_prs "*/feat/*|*/spec/*" "PULL REQUESTS TO UAT, MERGE AND CLOSE — whoever wrote them"
       reviews_waiting product ;;
+    owner)
+      # THE OWNER HAD NO QUEUE, AND EVERY ROLE HAD ONE.
+      #
+      # Measured: a product agent formed a release verdict — "do not ship bbee48f, four blockers" —
+      # and it reached the owner because they happened to be reading that window at that moment. The
+      # sha appeared in NO file, NO Issue and NO label; it existed in one terminal message. Had they
+      # been away, nothing would have told them, and nothing would have stopped the release either.
+      # The owner's own words: **"product 都没问我，我怎么知道我要决定?"**
+      #
+      # This is the orphan defect one level up. Every filter was right, every role was doing its job,
+      # and the one decision nobody else may take was addressed to a human through no channel at all.
+      #
+      # DERIVED, LIKE EVERY OTHER QUEUE. No coordinator maintains this: a blocker is an open Issue
+      # labelled `blocks:release`, and a question is an Issue whose body carries `## Blocked on a
+      # decision` with no ruling yet. Both are states the roles already produce.
+      emit "DECISIONS ONLY YOU CAN MAKE — the work proceeds around them, refusing where they bite:" \
+        '.[] | select(.pull_request==null)
+             | select(.body // "" | test("## Blocked on a decision"))
+             | "  #\(.number)  \(.title)"' --unruled
+
+      emit "HOLDING THE RELEASE — these are why nothing can ship yet:" \
+        '.[] | select(.pull_request==null)
+             | select([.labels[].name] | index("blocks:release"))
+             | "  #\(.number)  \(.title)"'
+
+      # AND WHETHER ANYONE HAS SAID ANYTHING ABOUT SHIPPING AT ALL. "No blockers" and "nobody has
+      # looked" are different answers and this is the page where confusing them is most expensive:
+      # one means ship, the other means you have been told nothing.
+      local nb rel
+      nb=$(printf '%s' "$ALL" | jq '[.[]|select(.pull_request==null)|select([.labels[].name]|index("blocks:release"))]|length')
+      rel=$(api --paginate "repos/$REPO/issues/comments?per_page=100" \
+            | jq -r '[.[] | select(.body | test("^\\[product\\][\\s\\S]*RELEASE"))] | length' 2>/dev/null || echo 0)
+      printf '\nRELEASE\n'
+      if [ "${nb:-0}" -gt 0 ]; then
+        printf '  BLOCKED — %s Issue(s) labelled blocks:release are open, listed above.\n' "$nb"
+      elif [ "${rel:-0}" -eq 0 ]; then
+        printf '  UNDETERMINED — nothing is labelled blocks:release AND product has recorded no release\n'
+        printf '  verdict. That is NOT "ready to ship": it is nobody having said. Ask product for a verdict\n'
+        printf '  before reading this as a green light.\n'
+      else
+        printf '  No open blocker. product has recorded %s release verdict(s) — read the most recent\n' "$rel"
+        printf '  before calling one; a verdict is about a specific sha and yours may be older than main.\n'
+      fi
+      ;;
     ops)
       emit "OPEN PULL REQUESTS — CI and gate health:" \
         '.[] | select(.pull_request!=null) | "  #\(.number)  \(.title)"' ;;
@@ -387,7 +431,7 @@ role_queue() {
       [ "$m" -le "$p" ] || printf '  OVER THE CAP. Dispatch no further machinery work until this is 1:1 or better.\n'
       ;;
     *)
-      echo "::error::'$role' is not a role. One of: dev qa product ops pm" >&2; return 1 ;;
+      echo "::error::'$role' is not a role. One of: dev qa product ops pm owner" >&2; return 1 ;;
   esac
 }
 
@@ -401,7 +445,7 @@ self_test() {
   # Every role in the documented set must be dispatchable. A role prompt that exists with no queue
   # arm is a role that can never find its work.
   local r
-  for r in dev qa product ops pm; do
+  for r in dev qa product ops pm owner; do
     grep -q "^    $r)" "${BASH_SOURCE[0]}" \
       || { echo "SELF-TEST FAIL: role '$r' has no queue arm" >&2; rc=1; }
   done
@@ -469,7 +513,56 @@ STUB
   esac
   rm -rf "$tmp"
 
-  [ "$rc" -eq 0 ] && echo "self-test passed: unknown roles refuse, every role has a queue, a failed lookup is not an empty queue, a pull request awaiting a verdict reaches a role that can give it and no role that cannot, and a verdict already posted does not come back to its author while remaining open to every other role"
+  # THE OWNER'S QUEUE MUST NOT REPORT SILENCE AS A GREEN LIGHT. **This is the whole reason the arm
+  # exists.** A board with no `blocks:release` label and no recorded verdict means nobody has looked;
+  # reading that as "ready to ship" is the release-shaped version of every other defect here, and it
+  # is the one that cannot be undone afterwards.
+  local otmp oout
+  otmp=$(mktemp -d)
+  cat > "$otmp/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *"issues?state=open"*) echo '[{"number":5,"title":"a thing","labels":[{"name":"type:bug"}],"body":""}]' ;;
+  *"issues/comments"*)   echo '[]' ;;
+  *)                     echo '[]' ;;
+esac
+STUB
+  chmod +x "$otmp/gh"
+  oout=$( PATH="$otmp:$PATH" REPO=x/y bash "${BASH_SOURCE[0]}" owner 2>&1 || true )
+  case "$oout" in
+    *UNDETERMINED*) : ;;
+    *) echo "SELF-TEST FAIL: with no blocker labelled and no verdict recorded, the owner queue did not say UNDETERMINED — silence would read as a green light to ship (got: $oout)" >&2; rc=1 ;;
+  esac
+  # MATCHED ON THE GREEN-LIGHT LINE, NOT ON A PHRASE THE WARNING ITSELF USES. The first version
+  # forbade "ready to ship", which appears inside the UNDETERMINED warning as the thing it tells you
+  # NOT to conclude — so the arm failed on correct output. A check whose corpus includes the text it
+  # polices is the same mistake this file's siblings have made twice; here it failed loudly rather
+  # than passing, which is the harmless direction.
+  case "$oout" in
+    *"No open blocker"*) echo "SELF-TEST FAIL: nobody having looked was reported as nothing blocking" >&2; rc=1 ;;
+  esac
+
+  # AND A LABELLED BLOCKER MUST BLOCK, BY NAME. A count alone is unfalsifiable from the output.
+  cat > "$otmp/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *"issues?state=open"*) echo '[{"number":67,"title":"a blocker","labels":[{"name":"blocks:release"}],"body":""}]' ;;
+  *"issues/comments"*)   echo '[]' ;;
+  *)                     echo '[]' ;;
+esac
+STUB
+  oout=$( PATH="$otmp:$PATH" REPO=x/y bash "${BASH_SOURCE[0]}" owner 2>&1 || true )
+  case "$oout" in
+    *BLOCKED*) : ;;
+    *) echo "SELF-TEST FAIL: an Issue labelled blocks:release did not block the release (got: $oout)" >&2; rc=1 ;;
+  esac
+  case "$oout" in
+    *"#67"*) : ;;
+    *) echo "SELF-TEST FAIL: the blocker was counted but not named — a count cannot be checked against the board" >&2; rc=1 ;;
+  esac
+  rm -rf "$otmp"
+
+  [ "$rc" -eq 0 ] && echo "self-test passed: unknown roles refuse, every role has a queue, a failed lookup is not an empty queue, a pull request awaiting a verdict reaches a role that can give it and no role that cannot, and a verdict already posted does not come back to its author while remaining open to every other role, and the owner is told UNDETERMINED rather than being handed silence as a green light"
   return $rc
 }
 
