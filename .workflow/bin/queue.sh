@@ -204,7 +204,12 @@ reviews_waiting() {
     authors=$("$(dirname "${BASH_SOURCE[0]}")/pr-authors.sh" --pr "$num" 2>/dev/null || echo "")
     # NO TRAILER MEANS INDEPENDENCE CANNOT BE ESTABLISHED, WHICH IS NOT THE SAME AS "YOURS TO DO".
     # The naming gate reports that defect with its remedy and it is not this queue's to duplicate.
-    [ -n "$authors" ] || continue
+    # EMPTY MEANS ONE OF TWO THINGS. No trailers at all is a commit defect the naming gate reports
+    # and not work to offer; trailers with every commit spec-only means nobody authored product
+    # judgement, so every role is independent and this pull request is waiting on ALL of them.
+    if [ -z "$authors" ]; then
+      [ -n "$("$(dirname "${BASH_SOURCE[0]}")/pr-authors.sh" --pr "$num" --all-trailers 2>/dev/null || echo "")" ] || continue
+    fi
     if printf '%s\n' "$authors" | grep -qx "$role"; then continue; fi
     rst=$(api "repos/$REPO/commits/$sha/status" \
           | jq -r '[.statuses[]?|select(.context|test("Reviewed by an agent"))][0].state // ""' 2>/dev/null || echo "")

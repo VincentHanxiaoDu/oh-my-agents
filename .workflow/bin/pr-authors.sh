@@ -30,15 +30,38 @@
 #
 # Usage: pr-authors.sh --pr <n> [role]            # from the API — what the routing uses
 #        pr-authors.sh --range <base> <head> [role]  # from this clone — what the gate uses
+#        pr-authors.sh ... --all-trailers            # every trailer, exemption NOT applied
+#        pr-authors.sh --is-spec-only < filelist     # the predicate alone, for driving it directly
 #        pr-authors.sh --self-test
+#
+# AN EMPTY AUTHOR SET HAS TWO MEANINGS AND THEY ARE NOT THE SAME FACT.
+#
+#   no `Agent:` trailer on any commit   → who built this CANNOT BE DETERMINED. A defect in the
+#                                         commits; the naming gate reports it with its remedy.
+#   trailers present, all spec-only     → DETERMINED: nobody authored product judgement here, so
+#                                         every role is independent and any of them may review.
+#
+# The first build of the exemption collapsed those into one empty list, and a pull request whose only
+# commit was an archive — #63, a real one — was refused with "no commit carries an Agent: trailer"
+# about a commit that carries `Agent: product`. It could not be merged except with `--admin`. That is
+# this project's signature defect, introduced into the gate that exists to police it, by the change
+# that was meant to remove a different instance of it. `--all-trailers` is how a caller tells them
+# apart, and every caller must.
 #
 # With no role: prints every author, one per line. With a role: exits 0 if that role authored
 # something here (i.e. is NOT independent), 1 if it did not.
 set -euo pipefail
 
+RAW=0
+args=()
+for a in "$@"; do
+  case "$a" in --all-trailers) RAW=1 ;; *) args+=("$a") ;; esac
+done
+[ "${#args[@]}" -gt 0 ] && set -- "${args[@]}"
+
 case "${1:-}" in
-  --pr|--range|--self-test) : ;;
-  *) echo "::error::usage: pr-authors.sh --pr <n> [role] | --range <base> <head> [role] | --self-test" >&2; exit 2 ;;
+  --pr|--range|--self-test|--is-spec-only) : ;;
+  *) echo "::error::usage: pr-authors.sh --pr <n> [role] | --range <base> <head> [role] [--all-trailers] | --is-spec-only | --self-test" >&2; exit 2 ;;
 esac
 
 resolve_repo() {
@@ -51,8 +74,15 @@ resolve_repo() {
 # THE ONE DECISION, AND EVERY CALLER REACHES IT. Takes a newline-separated file list; answers whether
 # this commit can make somebody an author. Empty list means a commit that changed nothing — a merge,
 # usually — and those carry no authorship either.
+# BLANK LINES ARE NOT PATHS. `git show --name-only --format=""` emits a leading empty line on some
+# git versions and not others — 2.54 on the runner does, 2.50.1 on a laptop does not. An empty line
+# does not match `^openspec/`, so `grep -v` selected it, so an archive commit touching nothing but
+# openspec/ conferred authorship after all — **on the runner only**. A reviewer was cleared as
+# independent by the local answer, did the review, and had the gate refuse the verdict it had just
+# posted. One blank line, and the two halves of "one derivation, one answer" disagreed.
 is_spec_only() { # is_spec_only <<< "<files>"
-  local files; files=$(cat)
+  local files
+  files=$(grep -v '^[[:space:]]*$' || true)
   [ -n "$files" ] || return 0
   ! printf '%s\n' "$files" | grep -qv '^openspec/'
 }
@@ -76,6 +106,7 @@ authors_from_pr() {
     while IFS=$'\t' read -r sha msg; do
       [ -n "$sha" ] || continue
       [ "$(printf '%s' "$msg" | sed 's/^Agent:[[:space:]]*//')" = "$r" ] || continue
+      if [ "$RAW" = 1 ]; then echo "$r"; break; fi
       files=$(gh api "repos/$REPO/commits/$sha" --jq '.files[]?.filename' 2>/dev/null || echo "")
       if ! printf '%s' "$files" | is_spec_only; then echo "$r"; break; fi
     done < <(printf '%s\n' "$shas")
@@ -90,7 +121,13 @@ authors_from_range() {
   for sha in $(git log --no-merges --format=%H "$base..$head" 2>/dev/null); do
     role=$(git log -1 --format=%B "$sha" | trailer_of)
     [ -n "$role" ] || continue
-    files=$(git show --name-only --format="" "$sha" 2>/dev/null || echo "")
+    # PLUMBING, NOT PORCELAIN. `git show --name-only --format=""` is formatted for people and its
+    # blank lines move between versions; `diff-tree` is plumbing and its output is stable, which is
+    # the property this comparison needs. The predicate strips blanks anyway — both, because either
+    # alone would have been enough to prevent the outage and neither alone is obviously sufficient
+    # for the next version of git.
+    if [ "$RAW" = 1 ]; then echo "$role"; continue; fi
+    files=$(git diff-tree --no-commit-id --name-only -r "$sha" 2>/dev/null || echo "")
     printf '%s' "$files" | is_spec_only || echo "$role"
   done | sort -u
 }
@@ -178,11 +215,67 @@ Agent: ops"
     *ops*) echo "SELF-TEST FAIL: a spec-only commit inherited through a merge made its author an author here" >&2; rc=1 ;;
   esac
 
-  [ "$rc" -eq 0 ] && echo "self-test passed: a spec-only commit confers no authorship, a code commit does, a commit NAMED archive that carries code still does, the role query agrees with the list, and an inherited commit does not"
+  # THE PREDICATE, DRIVEN AGAINST LITERAL FILE LISTS RATHER THAN AGAINST WHATEVER THE LOCAL GIT
+  # EMITS. This is #61's criterion 6 and the reason that outage was invisible: every arm above builds
+  # its fixture with the same git whose output shape is the variable, so it agrees with itself on
+  # every machine and disagreed with the runner on one. These are the shapes git 2.54 and git 2.50.1
+  # produce, written down, so a change in either is caught here instead of in a withdrawn review.
+  local case_in case_want got_rc
+  while IFS='|' read -r case_in case_want; do
+    [ -n "$case_in" ] || continue
+    got_rc=0; printf "$case_in" | bash "$me" --is-spec-only || got_rc=$?
+    [ "$got_rc" = "$case_want" ] || {
+      echo "SELF-TEST FAIL: is_spec_only on $(printf '%q' "$case_in") gave rc=$got_rc, wanted $case_want" >&2; rc=1; }
+  done <<'CASES'
+openspec/a.md\n|0
+\nopenspec/a.md\n|0
+openspec/a.md\n\n|0
+\n\nopenspec/a.md\nopenspec/b.md\n|0
+internal/a.go\n|1
+\ninternal/a.go\n|1
+\nopenspec/a.md\ninternal/a.go\n|1
+\n|0
+CASES
+
+  # AN EMPTY AUTHOR SET HAS TWO MEANINGS, AND `--all-trailers` IS HOW A CALLER TELLS THEM APART.
+  # Without this, a pull request whose only commit is an archive is refused as though its commits
+  # carried no trailer at all — which is what happened to #63, and it could not be merged.
+  local tmp2 b2 h2
+  tmp2=$(mktemp -d)
+  git -C "$tmp2" init -q -b main
+  git -C "$tmp2" config user.email t@t; git -C "$tmp2" config user.name t
+  mkdir -p "$tmp2/openspec/specs/x"
+  echo s > "$tmp2/f"; git -C "$tmp2" add -A; git -C "$tmp2" commit -qm "chore: seed"
+  b2=$(git -C "$tmp2" rev-parse HEAD)
+  echo spec > "$tmp2/openspec/specs/x/spec.md"; git -C "$tmp2" add -A
+  git -C "$tmp2" commit -qm "chore(x): archive only
+
+Agent: product"
+  h2=$(git -C "$tmp2" rev-parse HEAD)
+  out=$( cd "$tmp2" && bash "$me" --range "$b2" "$h2" 2>&1 )
+  [ -z "$out" ] || { echo "SELF-TEST FAIL: an archive-only branch reported an author ('$out') — nobody authored product judgement there" >&2; rc=1; }
+  out=$( cd "$tmp2" && bash "$me" --range "$b2" "$h2" --all-trailers 2>&1 )
+  case "$out" in
+    *product*) : ;;
+    *) echo "SELF-TEST FAIL: --all-trailers lost the trailer that is actually there — the caller cannot tell 'nobody is an author' from 'the commits carry no trailer', which is how #63 became unmergeable" >&2; rc=1 ;;
+  esac
+  # AND A BRANCH WITH NO TRAILER AT ALL MUST REPORT NOTHING FROM BOTH, or the distinction is a
+  # difference in name only.
+  echo more > "$tmp2/openspec/specs/x/spec.md"; git -C "$tmp2" add -A
+  git -C "$tmp2" commit -qm "chore(x): no trailer here"
+  out=$( cd "$tmp2" && bash "$me" --range "$h2" "$(git -C "$tmp2" rev-parse HEAD)" --all-trailers 2>&1 )
+  [ -z "$out" ] || { echo "SELF-TEST FAIL: --all-trailers invented a trailer for a commit that has none (got '$out')" >&2; rc=1; }
+  rm -rf "$tmp2"
+
+  [ "$rc" -eq 0 ] && echo "self-test passed: a spec-only commit confers no authorship, a code commit does, a commit NAMED archive that carries code still does, the role query agrees with the list, and an inherited commit does not; blank lines cannot change the predicate, and an archive-only branch is distinguishable from one with no trailers"
   return $rc
 }
 
 [ "$1" = "--self-test" ] && { self_test; exit $?; }
+# THE PREDICATE, DRIVABLE WITHOUT GIT. #61's criterion: a self-test that builds its fixtures with the
+# tool under test cannot observe that tool changing. This entry point takes a file list as text, so
+# the shapes git emits can be asserted as literals rather than reproduced by the local git.
+[ "$1" = "--is-spec-only" ] && { is_spec_only; exit $?; }
 
 case "$1" in
   --pr)    all=$(authors_from_pr "${2:?pull request number}"); want=${3:-} ;;

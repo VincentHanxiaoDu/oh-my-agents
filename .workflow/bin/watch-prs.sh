@@ -338,7 +338,15 @@ while true; do
         # THE SAME DERIVATION THE GATE USES, from the same file. Routing that disagrees with the
         # gate sends a role to do work the gate will refuse, which is worse than sending it nowhere.
         authors=$("$(dirname "${BASH_SOURCE[0]}")/pr-authors.sh" --pr "$num" 2>/dev/null || echo "")
-        if [ -n "$authors" ] && ! printf '%s\n' "$authors" | grep -qi "^$role"; then
+        # AN ARCHIVE-ONLY PULL REQUEST HAS NO AUTHORS AND STILL NEEDS A VERDICT. Empty means one
+        # of two things and only one of them is "not routable": no trailers at all is a commit
+        # defect the naming gate reports, while trailers-but-all-spec-only means nobody authored
+        # product judgement, so every role is independent and this must reach one of them. Treating
+        # both as "skip" left #63 in nobody's queue on top of being unmergeable.
+        if [ -z "$authors" ]; then
+          [ -n "$("$(dirname "${BASH_SOURCE[0]}")/pr-authors.sh" --pr "$num" --all-trailers 2>/dev/null || echo "")" ] || continue
+        fi
+        if ! printf '%s\n' "$authors" | grep -qi "^$role"; then
           # Only when it is actually waiting on one.
           rst=$(gh api "repos/$REPO/commits/$sha/status" --jq '[.statuses[]?|select(.context|test("Reviewed by an agent"))][0].state // ""' 2>/dev/null || echo "")
           [ "$rst" = success ] || emit NEEDS-REVIEW "$num" "$title" "[$branch] built by ${authors//$'\n'/, } — run /review-pr $num"

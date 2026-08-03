@@ -42,7 +42,14 @@ run_gate() {
   # ever certify one. That is a single point of failure by construction, and it deadlocked a board
   # of eleven. The exemption is earned by the diff and never by the subject line.
   authors=$("$(dirname "${BASH_SOURCE[0]}")/pr-authors.sh" --range "$base" HEAD)
-  [ -n "$authors" ] || {
+  # TWO EMPTY SETS, TWO DIFFERENT FACTS. `authors` empty can mean the commits carry no trailer — a
+  # defect, and not this gate's to diagnose — or that every commit was spec-only, in which case
+  # nobody authored product judgement here and EVERY role is independent. The first build of the
+  # exemption collapsed them and refused #63, an archive-only pull request, with "no commit carries
+  # an Agent: trailer" about a commit carrying `Agent: product`. Unmergeable except with --admin.
+  local trailers
+  trailers=$("$(dirname "${BASH_SOURCE[0]}")/pr-authors.sh" --range "$base" HEAD --all-trailers)
+  [ -n "$trailers" ] || {
     # SAY WHOSE PROBLEM THIS IS. This red is not about the review — it is about the commits, and a
     # reviewer reading "no independent review" concludes it is theirs to fix. The naming gate now
     # catches a missing trailer first and names the remedy; if this still fires, say plainly that
@@ -53,6 +60,10 @@ run_gate() {
     echo "  with the remedy, and it is the one to act on." >&2
     return 1
   }
+  # Trailers exist and the author set is empty: every commit was spec-only. That is a DETERMINED
+  # answer — nobody is an author — so the independence test below passes for whoever reviewed, and
+  # this is not a refusal. An archive-only pull request still needs a review; it does not need an
+  # impossible one.
 
   # The most recent review for THIS head sha. A push invalidates every prior review, which is why
   # the sha is part of the attestation rather than implied by it.
@@ -163,6 +174,30 @@ Agent: dev-a"
   _c "Reviewed-by: dev-a\\nReviewed-sha: $head\\nVerdict: changes-requested"
   local nrc=0; _run >/dev/null 2>&1 || nrc=$?
   [ "$nrc" -eq 2 ] || { echo "SELF-TEST FAIL: a refusal by a non-independent reviewer exited $nrc, not 2 — a landed refusal reads as no review at all" >&2; rc=1; }
+
+  # 5c. AN ARCHIVE-ONLY PULL REQUEST MUST BE REVIEWABLE. Every commit spec-only means nobody
+  #     authored product judgement, so any reviewer is independent — it does NOT mean the commits
+  #     carry no trailer. #63 was refused with "no commit carries an Agent: trailer" about a commit
+  #     carrying `Agent: product`, and could not be merged except with --admin. Driven through the
+  #     real entry point on a branch whose only commit touches nothing outside openspec/.
+  local sp; sp=$(mktemp -d)
+  git -C "$sp" init -q -b main; git -C "$sp" config user.email t@t; git -C "$sp" config user.name t
+  mkdir -p "$sp/openspec/specs/x"
+  echo seed > "$sp/f"; git -C "$sp" add -A; git -C "$sp" commit -qm "chore: seed"
+  local sbase; sbase=$(git -C "$sp" rev-parse HEAD)
+  echo spec > "$sp/openspec/specs/x/spec.md"; git -C "$sp" add -A
+  git -C "$sp" commit -qm "chore(x): archive what shipped
+
+Agent: product"
+  local shead; shead=$(git -C "$sp" rev-parse HEAD)
+  cp "$(dirname "$me")/pr-authors.sh" "$sp/pr-authors.sh" 2>/dev/null || true
+  cp "$me" "$sp/check-review.sh"
+  printf '[{"body":"Reviewed-by: qa\\nReviewed-sha: %s\\nVerdict: approve"}]' "$shead" > "$sp/c.json"
+  local src=0
+  ( cd "$sp" && bash "$sp/check-review.sh" "$shead" "$sp/c.json" "$sbase" ) >/dev/null 2>&1 || src=$?
+  [ "$src" -eq 0 ] || {
+    echo "SELF-TEST FAIL: an archive-only pull request with a clean independent approve exited $src — nobody authored it, so nobody can be non-independent, and refusing it makes it unmergeable without --admin" >&2; rc=1; }
+  rm -rf "$sp"
 
   # 6. AN ACCURATE SHORT REVIEW MUST PASS. The previous build's character floor rejected a
   #    38-character scope statement and accepted 45 characters of "looks fine to me".
