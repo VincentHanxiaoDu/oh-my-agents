@@ -61,6 +61,14 @@ run_check() {
     # notices — keep the queue watch and new Issues still arrive, so nothing looks wrong while every
     # red gate and every review request goes unheard. Restarting by hand is not a mechanism; it is a
     # thing an agent has to remember while doing something else.
+    # AND IT MUST NOT ALSO CARRY THE SUPERSEDED INSTRUCTION. A prompt that says both "start one
+    # supervised monitor" and "start these two" has told the role two different things; the reader
+    # follows whichever it saw first, and the one it saw first was the stale one at the old interval.
+    # This survived a refresh: the new block was inserted and the old block was left above it.
+    grep -q 'Monitor(command: "\./\.workflow/bin/watch-queue\.sh' "$f" \
+      && { echo "::error::$role.md still starts watch-queue.sh as its own monitor as well as under watch-all.sh — two instructions, and the stale one comes first" >&2; rc=1; }
+    grep -q 'Monitor(command: "\./\.workflow/bin/watch-prs\.sh' "$f" \
+      && { echo "::error::$role.md still starts watch-prs.sh as its own monitor as well as under watch-all.sh — two instructions, and the stale one comes first" >&2; rc=1; }
     grep -q 'watch-all\.sh' "$f" \
       || { echo "::error::$role.md starts the two watches unsupervised — when one dies nothing brings it back and the role keeps half its coverage without knowing which half" >&2; rc=1; }
     # AND IT MUST NOT DEPEND ON THAT WATCH SURVIVING. A monitor is a process and processes end, and

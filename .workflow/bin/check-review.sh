@@ -18,6 +18,34 @@ esac
 # to me". A length is not a proxy for having looked. Emptiness is the only thing checkable here;
 # everything else is the reviewer's judgement, and pretending otherwise moved the judgement into
 # a number that could not hold it.
+# THE POLICY IS PROJECT-OWNED, AND ITS ABSENCE MEANS THE STRICT RULE.
+#
+# `.workflow/review-policy` holds one word. `self-allowed` lets an author certify its own work; any
+# other content, or no file at all, requires an independent verdict. It sits outside `.workflow/bin/`
+# deliberately — bin/ is the framework's and is replaced wholesale on every install, and a policy a
+# refresh silently reverts is not a policy.
+#
+# WHY THIS EXISTS. A pull request review means, by definition, somebody else approving. Some
+# repositories have no somebody else: the framework's own repository is worked by one role, so the
+# independence rule is unsatisfiable there by construction, and the only ways out were to bypass the
+# gate as an admin or to abandon the record entirely. Both destroy the thing the gate is for.
+#
+# **A SELF-REVIEW IS PERMITTED AND IS NEVER SPELLED THE SAME WAY AS AN INDEPENDENT ONE.** It merges;
+# it also says what it was, in the commit status, where it can be read and counted afterwards. That
+# is the whole of the relaxation: a determined-but-weaker answer, kept distinguishable from the
+# stronger one, which is this project's single rule applied to its own enforcement.
+review_policy() {
+  local f="${REVIEW_POLICY_FILE:-.workflow/review-policy}"
+  [ -f "$f" ] || { echo independent; return 0; }
+  local pv; pv=$(tr -d '[:space:]' < "$f" | tr 'A-Z' 'a-z')
+  case "$pv" in
+    self-allowed) echo self-allowed ;;
+    # AN UNREADABLE OR MISSPELT POLICY IS THE STRICT ONE, NEVER THE PERMISSIVE ONE. A typo must not
+    # silently widen what may merge, and `self_allowed` is a typo somebody will make.
+    *) echo independent ;;
+  esac
+}
+
 run_gate() {
   local head=$1 comments=$2 base=${3:-} rc=0 refused=0 authors reviewer verdict sha
 
@@ -96,8 +124,27 @@ run_gate() {
 
   # INDEPENDENCE. An agent that wrote any commit in this range cannot certify it — including the pm.
   if printf '%s\n' "$authors" | grep -qx "$reviewer"; then
-    echo "::error::'$reviewer' authored commits in this PR, so its review does not establish independence" >&2
-    rc=1
+    # `refused` IS TESTED HERE AS WELL AS `rc`, AND IT IS DEFENCE IN DEPTH RATHER THAN THE ONLY
+    # DEFENCE — said plainly, because a comment claiming a test it does not have is worse than no
+    # comment. A `changes-requested` verdict records itself in `refused` and only becomes rc=2
+    # further down, which is after this; that conversion wins, so removing this clause does not
+    # currently change any outcome and arm 5e stays green under that mutation.
+    #
+    # It earned its place all the same: the first version of this block `return`ed as soon as it set
+    # rc=3, which skipped the conversion entirely and DID turn a refusal into a pass. Arm 5e caught
+    # that one. The early return is gone; the guard stays, so reintroducing it cannot resurrect the
+    # bug. **Widening WHO may certify must never widen WHAT counts as certified.**
+    if [ "$(review_policy)" = self-allowed ] && [ "$rc" -eq 0 ] && [ "${refused:-0}" -eq 0 ]; then
+      # EXIT 3: SELF-REVIEWED. Not 0, which would say an independent agent looked, and not 1, which
+      # would say nobody did. A third fact needs a third code, for exactly the reason a refusal
+      # needed one — the publishing step picks its wording from this number, and two facts sharing
+      # a code is how a landed refusal came to be published as an absent review.
+      echo "::notice::'$reviewer' authored commits in this PR. This repository permits a self-review, so this PASSES — published as a SELF-review, never as an independent one." >&2
+      rc=3
+    else
+      echo "::error::'$reviewer' authored commits in this PR, so its review does not establish independence" >&2
+      rc=1
+    fi
   fi
 
   # A REFUSAL SURVIVES EVERY OTHER COMPLAINT ABOUT THE SAME REVIEW, and this is the line that makes
@@ -114,6 +161,7 @@ run_gate() {
   if [ "$refused" -eq 1 ]; then rc=2; fi
 
   [ "$rc" -eq 0 ] && echo "review ok: $head reviewed by '$reviewer', which authored none of its commits"
+  [ "$rc" -eq 3 ] && echo "review ok (SELF-REVIEWED): $head certified by '$reviewer', which also built it. NO INDEPENDENT AGENT HAS LOOKED AT THIS."
   return "$rc"
 }
 
@@ -198,6 +246,53 @@ Agent: product"
   [ "$src" -eq 0 ] || {
     echo "SELF-TEST FAIL: an archive-only pull request with a clean independent approve exited $src — nobody authored it, so nobody can be non-independent, and refusing it makes it unmergeable without --admin" >&2; rc=1; }
   rm -rf "$sp"
+
+  # 5d. THE SELF-REVIEW POLICY, DRIVEN IN ALL THREE DIRECTIONS. A repository with one agent cannot
+  #     satisfy the independence rule at all, and the two escapes available before this — bypass the
+  #     gate as an admin, or stop requiring a review — destroy exactly what the gate is for.
+  local pdir; pdir=$(mktemp -d)
+  _c "Reviewed-by: dev-a\\nReviewed-sha: $head\\nVerdict: approve"
+
+  #     (a) DEFAULT IS STRICT. No policy file means an author still cannot certify its own work; a
+  #         relaxation that arrives by default is one nobody chose.
+  local drc=0
+  ( cd "$tmp" && REVIEW_POLICY_FILE="$pdir/absent" bash "$me" "$head" "$tmp/c.json" "$base" ) >/dev/null 2>&1 || drc=$?
+  [ "$drc" -eq 1 ] || { echo "SELF-TEST FAIL: with no policy file a self-review exited $drc, not 1 — the strict rule must be the default" >&2; rc=1; }
+
+  #     (b) A TYPO IS STRICT TOO. `self_allowed` is a spelling somebody will use, and a misread
+  #         policy must never be the permissive one.
+  printf 'self_allowed\n' > "$pdir/typo"
+  drc=0
+  ( cd "$tmp" && REVIEW_POLICY_FILE="$pdir/typo" bash "$me" "$head" "$tmp/c.json" "$base" ) >/dev/null 2>&1 || drc=$?
+  [ "$drc" -eq 1 ] || { echo "SELF-TEST FAIL: a misspelt policy exited $drc, not 1 — a typo silently widened what may merge" >&2; rc=1; }
+
+  #     (c) `self-allowed` PASSES WITH ITS OWN CODE. 3, not 0: a caller that cannot tell a
+  #         self-review from an independent one will publish them with the same sentence, and then
+  #         nobody can count what shipped uncertified.
+  printf 'self-allowed\n' > "$pdir/ok"
+  drc=0
+  ( cd "$tmp" && REVIEW_POLICY_FILE="$pdir/ok" bash "$me" "$head" "$tmp/c.json" "$base" ) >/dev/null 2>&1 || drc=$?
+  [ "$drc" -eq 3 ] || { echo "SELF-TEST FAIL: a permitted self-review exited $drc, not 3 — it must pass, and it must not pass as an independent review" >&2; rc=1; }
+
+  #     (d) AND IT SAYS SO. The status wording is derived from this output and the exit code; if the
+  #         success line claims independence, the record is wrong in the one place anyone reads it.
+  local sout
+  sout=$( cd "$tmp" && REVIEW_POLICY_FILE="$pdir/ok" bash "$me" "$head" "$tmp/c.json" "$base" 2>&1 || true )
+  case "$sout" in
+    *SELF-REVIEWED*) : ;;
+    *) echo "SELF-TEST FAIL: a self-review did not announce itself as one (got: $sout)" >&2; rc=1 ;;
+  esac
+  case "$sout" in
+    *"authored none of its commits"*) echo "SELF-TEST FAIL: a self-review claimed the reviewer authored none of its commits" >&2; rc=1 ;;
+  esac
+
+  #     (e) THE POLICY DOES NOT FORGIVE A REFUSAL. `changes-requested` from an author is still a
+  #         refusal; self-review widens WHO may certify, never WHAT counts as certified.
+  _c "Reviewed-by: dev-a\\nReviewed-sha: $head\\nVerdict: changes-requested"
+  drc=0
+  ( cd "$tmp" && REVIEW_POLICY_FILE="$pdir/ok" bash "$me" "$head" "$tmp/c.json" "$base" ) >/dev/null 2>&1 || drc=$?
+  [ "$drc" -eq 2 ] || { echo "SELF-TEST FAIL: a self-review requesting changes exited $drc, not 2 — the policy turned a refusal into a pass" >&2; rc=1; }
+  rm -rf "$pdir"
 
   # 6. AN ACCURATE SHORT REVIEW MUST PASS. The previous build's character floor rejected a
   #    38-character scope statement and accepted 45 characters of "looks fine to me".

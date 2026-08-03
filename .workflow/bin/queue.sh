@@ -191,6 +191,39 @@ my_prs() {
 # request's own commit list, over the API. Not a merge-base range in this clone: those are
 # different sets of commits, and a reviewer cleared by the second one had to withdraw a verdict it
 # had already posted. If this offers you a pull request, the gate will accept your verdict on it.
+# HAS THIS ROLE ALREADY RULED ON THIS EXACT HEAD? Reads the attestation `check-review.sh` reads —
+# `Reviewed-by: <role>` and `Reviewed-sha: <head>` in a comment on the pull request — so there is one
+# record of "a verdict happened" and both the gate and this queue read it. Nothing is stored twice.
+#
+# A LOOKUP FAILURE IS NOT "NOT YET REVIEWED". `api` exits non-zero rather than returning empty, for
+# the same reason every other query here does: the alternative is a queue that hands out work a role
+# has already done because GitHub was briefly unreachable.
+#
+# `(^|\n)` AND `(\r?\n|$)`, NOT `^`/`$`. jq's `test` is Oniguruma and its `"m"` flag means "dot
+# matches newline" — it is NOT Perl's `/m`, and `$` stays anchored to the end of the whole body. The
+# first version used `^…$` with `"m"` and matched NOTHING, so every verdict looked absent and the
+# fix silently did not apply. It went red in `internal/machinery` on the first run, which is the
+# only reason it is not shipped that way.
+#
+# The tail anchor also stops `qa` matching a longer name and a short sha matching a longer one. It
+# errs toward "not reviewed", i.e. toward offering the work again — the failure this replaces, and
+# the safe direction to be wrong in.
+reviewed_by() { # reviewed_by <pr-number> <role> <head-sha>
+  local num=$1 role=$2 sha=$3 found raw
+  # `api`'s OWN `exit 1` IS NOT ENOUGH HERE, AND THAT IS THE TRAP. A command substitution is a
+  # subshell: `found=$(api ...)` catches the exit, `found` becomes empty, `${found:-0}` becomes 0,
+  # and the outage renders as "nobody has reviewed this" — the exact collapse every other query on
+  # this page goes out of its way to prevent, reintroduced by the shape of the call rather than by
+  # the logic. The lookup-failure test caught it on the first run; reading the code did not.
+  raw=$(api --paginate "repos/$REPO/issues/$num/comments?per_page=100") || exit 1
+  found=$(printf '%s' "$raw" \
+    | jq -r --arg r "$role" --arg h "$sha" '
+        [ .[] | .body
+          | select(test("(^|\n)Reviewed-by:[ \t]*" + $r + "[ \t]*(\r?\n|$)"))
+          | select(test("(^|\n)Reviewed-sha:[ \t]*" + $h + "[ \t]*(\r?\n|$)")) ] | length' 2>/dev/null || echo 0)
+  [ "${found:-0}" -gt 0 ]
+}
+
 reviews_waiting() {
   local role=$1 num sha title authors rst prs any=0
   resolve_repo
@@ -216,6 +249,27 @@ reviews_waiting() {
     # ALREADY GREEN MEANS ALREADY REVIEWED FOR THIS HEAD. Anything else — red, pending, or absent —
     # is waiting, and a red one is waiting on a fresh verdict just as much as a missing one is.
     if [ "$rst" = success ]; then continue; fi
+    # A VERDICT YOU HAVE ALREADY POSTED ON THIS HEAD IS NOT WORK WAITING FOR YOU (Issue #59).
+    #
+    # `success` was the ONLY suppressor here, and a `changes-requested` verdict does not produce
+    # one — it publishes `failure`. So the role that had just refused a pull request was handed it
+    # again the next round, with nothing anywhere recording that it had already looked. Measured by
+    # driving this script against a stub: a role with a landed refusal on head `cafe` was offered
+    # `cafe` again, indefinitely, until somebody else approved it or the author pushed.
+    #
+    # NO NEW STATE. The attestation `check-review.sh` already reads is the record — `Reviewed-by:`
+    # names the role and `Reviewed-sha:` names the head, in a comment on the pull request. Derived
+    # from the same place the gate derives its answer, so the queue and the gate cannot disagree.
+    #
+    # AND IT IS NOT A CLAIM, WHICH IS WHY IT CANNOT STRAND ANYTHING (criterion 3). It is posted
+    # AFTER the review, never before, so a role that dies mid-review holds nothing and the pull
+    # request stays offered to everyone. It releases itself: the sha is part of the attestation, so
+    # a push makes every prior verdict stale and the work reappears in every queue.
+    #
+    # AND IT NEVER NARROWS THE ELIGIBLE SET (criterion 2). It suppresses a head for the ONE role
+    # that already ruled on it. Every other independent role still sees it, which is the property
+    # whose absence caused #32's outage.
+    if reviewed_by "$num" "$role" "$sha"; then continue; fi
     any=1
     printf '  #%-4s %-46s  run /review-pr %-4s (built by %s)\n' \
       "$num" "$(printf '%s' "$title" | cut -c1-46)" "$num" "$(printf '%s' "$authors" | tr '\n' ',' | sed 's/,$//')"
@@ -373,6 +427,7 @@ case "$*" in
   *"pulls/9/commits"*)  printf 'c9\tAgent: dev\n' ;;
   *"/commits/c9"*)      echo 'internal/a.go' ;;
   *"pulls?state=open"*) echo '[{"number":9,"head":{"ref":"dev/feat/9-x","sha":"cafe"},"title":"feat(x): y"}]' ;;
+  *"issues/9/comments"*) printf '%s' "${STUB_COMMENTS:-[]}" ;;
   *"/status"*)          echo '{"statuses":[]}' ;;
   *)                    echo '[]' ;;
 esac
@@ -391,9 +446,30 @@ STUB
     *"/review-pr 9"*) echo "SELF-TEST FAIL: a pull request was offered for review to a role that authored it — the gate refuses that verdict, so the work would be done twice and stay blocked" >&2; rc=1 ;;
     *) : ;;
   esac
+  # AND A VERDICT YOU HAVE ALREADY POSTED MUST NOT COME BACK TO YOU — WITHOUT REMOVING IT FROM
+  # ANYONE ELSE. Both halves, in one arm, because either alone is passed by a wrong fix: suppressing
+  # for nobody is the duplication (Issue #59), and suppressing for everybody is the single eligible
+  # reviewer whose failure stopped the board (#32).
+  local att='[{"body":"Reviewed-by: qa\nReviewed-sha: cafe\nVerdict: changes-requested"}]'
+  out=$( PATH="$tmp:$PATH" REPO=x/y STUB_COMMENTS="$att" bash "${BASH_SOURCE[0]}" qa 2>&1 || true )
+  case "$out" in
+    *"/review-pr 9"*) echo "SELF-TEST FAIL: qa had already posted a verdict on head 'cafe' and the queue offered that head to qa again — a changes-requested verdict leaves the status red, so this repeats every round and the same role reviews the same head forever (got: $out)" >&2; rc=1 ;;
+  esac
+  out=$( PATH="$tmp:$PATH" REPO=x/y STUB_COMMENTS="$att" bash "${BASH_SOURCE[0]}" product 2>&1 || true )
+  case "$out" in
+    *"/review-pr 9"*) : ;;
+    *) echo "SELF-TEST FAIL: qa's verdict removed this pull request from PRODUCT's queue too — one role's review now decides the work for every role, which is a single eligible reviewer and the outage this redundancy exists to prevent (got: $out)" >&2; rc=1 ;;
+  esac
+  # AND IT RELEASES ITSELF ON A PUSH. The sha is part of the attestation, so a verdict naming another
+  # head holds nothing — which is why this cannot strand a pull request behind a role that died.
+  out=$( PATH="$tmp:$PATH" REPO=x/y STUB_COMMENTS='[{"body":"Reviewed-by: qa\nReviewed-sha: 0000\nVerdict: approve"}]' bash "${BASH_SOURCE[0]}" qa 2>&1 || true )
+  case "$out" in
+    *"/review-pr 9"*) : ;;
+    *) echo "SELF-TEST FAIL: a verdict naming a DIFFERENT head suppressed this one — a stale review strands the head it does not describe (got: $out)" >&2; rc=1 ;;
+  esac
   rm -rf "$tmp"
 
-  [ "$rc" -eq 0 ] && echo "self-test passed: unknown roles refuse, every role has a queue, a failed lookup is not an empty queue, and a pull request awaiting a verdict reaches a role that can give it and no role that cannot"
+  [ "$rc" -eq 0 ] && echo "self-test passed: unknown roles refuse, every role has a queue, a failed lookup is not an empty queue, a pull request awaiting a verdict reaches a role that can give it and no role that cannot, and a verdict already posted does not come back to its author while remaining open to every other role"
   return $rc
 }
 

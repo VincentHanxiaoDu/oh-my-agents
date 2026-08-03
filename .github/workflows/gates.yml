@@ -217,6 +217,11 @@ jobs:
           rc=$?
           set -e
           echo "$rc" > review.rc
+          # RC 3 IS A PASS, AND THE STEP MUST NOT GO RED FOR IT. A self-review permitted by this
+          # repository's policy is a determined answer that merges; the wording it publishes is
+          # chosen from review.rc below, which is where the difference from an independent verdict
+          # is kept. Failing the step would make the job red for an outcome that is allowed.
+          [ "$rc" = 3 ] && exit 0
           exit "$rc"
 
       - name: Publish the verdict as a commit status
@@ -232,7 +237,15 @@ jobs:
             state=pending
             desc="the review checker failed its own self-test — nothing here says whether a review exists"
           elif [ "${{ steps.check.outcome }}" = "success" ]; then
-            state=success; desc="Reviewed by an agent that did not build it"
+            state=success
+            # TWO PASSES, TWO SENTENCES. A self-review and an independent review both merge and must
+            # never read the same: the whole point of permitting the weaker one is that afterwards
+            # you can see which shipped that way, and count them.
+            if [ "$(cat review.rc 2>/dev/null || echo 0)" = "3" ]; then
+              desc="SELF-REVIEWED — the author certified its own work; no independent agent has looked"
+            else
+              desc="Reviewed by an agent that did not build it"
+            fi
           elif [ "${{ steps.check.outcome }}" = "failure" ]; then
             state=failure
             # A REFUSED REVIEW AND AN ABSENT ONE ARE DIFFERENT FACTS, and they shared this string —

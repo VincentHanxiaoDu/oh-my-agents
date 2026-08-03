@@ -23,7 +23,7 @@
 # repeatedly and the role it served sat idle believing its queue was empty. So this one says it is
 # still standing, sparsely, and says it has died, loudly.
 #
-# Usage: watch-queue.sh <role> [interval-seconds]     default interval: 60
+# Usage: watch-queue.sh <role> [interval-seconds]     default interval: 300
 #        watch-queue.sh --self-test
 set -euo pipefail
 
@@ -130,7 +130,12 @@ STUB
 [ "${1:-}" = "--self-test" ] && { self_test; exit $?; }
 
 role=${1:?usage: watch-queue.sh <role> [interval-seconds] | --self-test}
-interval=${2:-60}
+# 300s, NOT 60. Measured on a six-pull-request board: one poll of both watches costs a role about 52
+# API calls, so three roles at 60s is ~9360 calls/hour against a limit of 5000 — 1.9x over, before
+# any agent does any work of its own. At 300s it is ~1872, about 37% of the budget. A product agent
+# raised its own watch to 300 unilaterally and said why; it was right and this default was wrong.
+# Nothing on a review board moves on a sixty-second timescale.
+interval=${2:-300}
 
 case "$role" in
   dev|qa|product|ops|pm) : ;;
@@ -142,7 +147,30 @@ esac
 seen=""
 polls=0
 
+here_bin=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# Sleep until the limit resets, but never less than one interval and never more than ten minutes —
+# an unreadable reset must not park the watch indefinitely.
+HOLD_SLEEP() {
+  local s; s=$("$here_bin/gh-budget.sh" reset-in 2>/dev/null || echo "$interval")
+  [ "$s" -lt "$interval" ] && s=$interval
+  [ "$s" -gt 600 ] && s=600
+  echo "$s"
+}
+
 while true; do
+  # THE WORK COMES BEFORE THE WATCHING. Below the reserve this watch stops polling and waits for the
+  # limit to reset, because a role that cannot call the API cannot review, merge or close anything —
+  # and a watch still spending budget while that is true has inverted its own purpose. Measured: a
+  # role reported "my check failed and cost the watch its poll in the same window."
+  #
+  # HOLDING IS A THIRD STATE. Not a failed lookup, not a quiet board — it says the watch is alive,
+  # deliberately idle, and when it resumes. Reading the limit is free and does not spend it.
+  bmsg=$("$here_bin/gh-budget.sh" check 2>&1) && bok=0 || bok=$?
+  if [ "${bok:-0}" -eq 1 ]; then
+    echo "HOLDING — $bmsg. Not polling: the remaining budget is reserved for this role's own work."
+    sleep "$(HOLD_SLEEP)"
+    continue
+  fi
   out=""
   if ! out=$("$here/queue.sh" "$role" 2>&1); then
     # A poll that could not be answered is an EVENT, not silence.

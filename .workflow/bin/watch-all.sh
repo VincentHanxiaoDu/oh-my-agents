@@ -22,7 +22,7 @@
 # every thirty seconds looks identical to one with nothing wrong, and the repair hides the fault —
 # so the count is carried in the line and a role can see it climbing.
 #
-# Usage: watch-all.sh <role> [interval-seconds]     default interval: 60
+# Usage: watch-all.sh <role> [interval-seconds]     default interval: 300
 #        watch-all.sh --self-test
 set -euo pipefail
 
@@ -92,7 +92,12 @@ self_test() {
 [ "${1:-}" = "--self-test" ] && { self_test; exit $?; }
 
 role=${1:?usage: watch-all.sh <role> [interval-seconds] | --self-test}
-interval=${2:-60}
+# 300s, NOT 60. Measured on a six-pull-request board: one poll of both watches costs a role about 52
+# API calls, so three roles at 60s is ~9360 calls/hour against a limit of 5000 — 1.9x over, before
+# any agent does any work of its own. At 300s it is ~1872, about 37% of the budget. A product agent
+# raised its own watch to 300 unilaterally and said why; it was right and this default was wrong.
+# Nothing on a review board moves on a sixty-second timescale.
+interval=${2:-300}
 case "$role" in dev|qa|product|ops|pm) : ;; *) echo "::error::'$role' is not a role. One of: dev qa product ops pm" >&2; exit 2 ;; esac
 
 # PLAIN VARIABLES, NOT AN ASSOCIATIVE ARRAY. `declare -A` is bash 4, and macOS ships bash 3.2 as

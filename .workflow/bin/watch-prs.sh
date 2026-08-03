@@ -29,7 +29,7 @@
 # infrequent (every tenth poll, so ~10 minutes at the default interval): often enough that its
 # absence is diagnosable, rare enough that it does not bury the events it accompanies.
 #
-# Usage: watch-prs.sh <role> [interval-seconds]      default interval: 60
+# Usage: watch-prs.sh <role> [interval-seconds]      default interval: 300
 #        watch-prs.sh <role> --sweep                 ONE pass over the board, then exit
 #        watch-prs.sh --self-test
 set -euo pipefail
@@ -242,7 +242,12 @@ case "$role" in dev|qa|product|ops|pm|--main-state) : ;; *) echo "::error::'$rol
 # which a dead background process can strand fourteen pull requests is not a process; it is a
 # process plus a single point of failure that nothing watches.
 sweep=no
-interval=60
+# 300s, NOT 60. Measured on a six-pull-request board: one poll of both watches costs a role about 52
+# API calls, so three roles at 60s is ~9360 calls/hour against a limit of 5000 — 1.9x over, before
+# any agent does any work of its own. At 300s it is ~1872, about 37% of the budget. A product agent
+# raised its own watch to 300 unilaterally and said why; it was right and this default was wrong.
+# Nothing on a review board moves on a sixty-second timescale.
+interval=300
 case "${2:-}" in
   --sweep) sweep=yes ;;
   "")      : ;;
@@ -291,9 +296,32 @@ main_state() {
 # The self-test drives main's colour through this, so what it asserts is what the watch runs.
 [ "$role" = "--main-state" ] && { main_state; exit 0; }
 
+here_bin=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# Sleep until the limit resets, but never less than one interval and never more than ten minutes —
+# an unreadable reset must not park the watch indefinitely.
+HOLD_SLEEP() {
+  local s; s=$("$here_bin/gh-budget.sh" reset-in 2>/dev/null || echo "$interval")
+  [ "$s" -lt "$interval" ] && s=$interval
+  [ "$s" -gt 600 ] && s=600
+  echo "$s"
+}
+
 while true; do
   # REST, not GraphQL: `gh pr list` is a GraphQL call and that quota runs out on its own schedule,
   # separately from REST. When it did, every such command returned nothing rather than an error.
+  # THE WORK COMES BEFORE THE WATCHING. Below the reserve this watch stops polling and waits for the
+  # limit to reset, because a role that cannot call the API cannot review, merge or close anything —
+  # and a watch still spending budget while that is true has inverted its own purpose. Measured: a
+  # role reported "my check failed and cost the watch its poll in the same window."
+  #
+  # HOLDING IS A THIRD STATE. Not a failed lookup, not a quiet board — it says the watch is alive,
+  # deliberately idle, and when it resumes. Reading the limit is free and does not spend it.
+  bmsg=$("$here_bin/gh-budget.sh" check 2>&1) && bok=0 || bok=$?
+  if [ "${bok:-0}" -eq 1 ]; then
+    echo "HOLDING — $bmsg. Not polling: the remaining budget is reserved for this role's own work."
+    sleep "$(HOLD_SLEEP)"
+    continue
+  fi
   if ! prs=$(gh api "repos/$REPO/pulls?state=open&per_page=100" 2>&1); then
     echo "LOOKUP FAILED: $(printf '%s' "$prs" | tr '\n' ' ' | cut -c1-160)"
     # A SWEEP THAT COULD NOT READ THE BOARD MUST EXIT NON-ZERO. It is answering a question asked
