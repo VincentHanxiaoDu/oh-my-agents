@@ -29,7 +29,12 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 #                       of — it is the framework's own check and runs in the framework's own CI
 #   check-no-orphans.sh answers about the BOARD, not about this diff — a role runs it when it wants
 #                       to know whether anything has fallen out of every queue, not before a push
-CANNOT_RUN_LOCALLY="check-review.sh check-no-orphans.sh check-readme.sh"
+#   check-dogfood.sh    asks whether THIS repository runs the gates it distributes, which is a
+#                       question only the framework repository has. A consumer has no `framework/`
+#                       directory and the check has nothing to compare — running it in an installed
+#                       project would fail for the one reason that is not a defect. It runs in the
+#                       framework's own CI, via `make ci`, which is the point of it existing.
+CANNOT_RUN_LOCALLY="check-review.sh check-no-orphans.sh check-readme.sh check-dogfood.sh"
 
 self_test() {
   local rc=0 g b

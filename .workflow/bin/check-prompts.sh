@@ -56,6 +56,13 @@ run_check() {
     # waiting for new work with its own branch red and nothing saying so.
     grep -q 'watch-prs\.sh' "$f" \
       || { echo "::error::$role.md never watches its own PRs — a red gate or a requested change would never reach it" >&2; rc=1; }
+    # AND THE TWO WATCHES MUST BE SUPERVISED RATHER THAN STARTED AND FORGOTTEN. A role told to start
+    # two monitors is repeatedly observed running one, and which half it lost is the part nobody
+    # notices — keep the queue watch and new Issues still arrive, so nothing looks wrong while every
+    # red gate and every review request goes unheard. Restarting by hand is not a mechanism; it is a
+    # thing an agent has to remember while doing something else.
+    grep -q 'watch-all\.sh' "$f" \
+      || { echo "::error::$role.md starts the two watches unsupervised — when one dies nothing brings it back and the role keeps half its coverage without knowing which half" >&2; rc=1; }
     # AND IT MUST NOT DEPEND ON THAT WATCH SURVIVING. A monitor is a process and processes end, and
     # a dead one is indistinguishable from a quiet queue — measured: a watcher died three times in
     # one session, the role went on believing its board was clear, and fourteen pull requests
@@ -68,6 +75,22 @@ run_check() {
       || { echo "::error::$role.md never tells the role to sweep the board, so a dead monitor strands its work silently and nothing recovers it" >&2; rc=1; }
     grep -q 'WATCHING' "$f" \
       || { echo "::error::$role.md never mentions the WATCHING heartbeat — the role cannot tell a live watch from a dead one, and silence would mean both" >&2; rc=1; }
+  done
+
+  # EVERY ROLE THAT POSTS A COMMENT MUST BE TOLD TO SIGN IT, AND THE RULE WAS IN TWO PROMPTS OF SIX.
+  #
+  # `queue.sh` derives what a role has already looked at from `startswith("[<role>]")` on its own
+  # comments. A comment signed any other way is invisible to it, and the queue then offers finished
+  # work to the next agent. Measured on a live board: **100 comments and `[dev]` appeared zero
+  # times** — dev, review-pr, create-feature and release-version were never told, so nothing dev
+  # said on an Issue was attributable and none of it could be seen.
+  #
+  # This is the "a rule nothing enforces" shape that this file exists for, and it survived here
+  # because the two prompts that DID carry the rule made the convention look established.
+  for role in dev-workflow qa-workflow product-workflow review-pr create-feature release-version; do
+    f="$dir/$role.md"; [ -f "$f" ] || continue
+    grep -qi 'starts with `\[' "$f" \
+      || { echo "::error::$role.md never tells the role to mark its comments with [<role>] — queue.sh cannot see what it has already done, and will offer the work again" >&2; rc=1; }
   done
 
   # R4 — CLOSURE AUTHORITY LIVES IN THE PROMPT OF THE ROLE THAT CLOSES, and nowhere else.
@@ -186,7 +209,7 @@ run_check() {
       || { echo "::error::$role.md has no @.workflow/<role>/AGENT.md injection point — a project could only extend it by editing a file the installer overwrites" >&2; rc=1; }
   done
 
-  [ "$rc" -eq 0 ] && echo "prompts ok: every role pulls its own queue and fans out uncapped, closure authority is stated where it is exercised, criteria cannot be softened, every working role watches its queue and its own PRs and can sweep the board when that watch dies, and every command has its project injection point"
+  [ "$rc" -eq 0 ] && echo "prompts ok: every role pulls its own queue and fans out uncapped, closure authority is stated where it is exercised, criteria cannot be softened, every working role watches its queue and its own PRs and can sweep the board when that watch dies, every role that comments is told to sign it so the queue can see what it has done, and every command has its project injection point"
   return "$rc"
 }
 
