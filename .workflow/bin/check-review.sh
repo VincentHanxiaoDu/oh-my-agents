@@ -19,7 +19,7 @@ esac
 # everything else is the reviewer's judgement, and pretending otherwise moved the judgement into
 # a number that could not hold it.
 run_gate() {
-  local head=$1 comments=$2 base=${3:-} rc=0 authors reviewer verdict sha
+  local head=$1 comments=$2 base=${3:-} rc=0 refused=0 authors reviewer verdict sha
 
   [ -f "$comments" ] || {
     echo "::error::'$comments' does not exist, so no review was examined. This is a LOOKUP FAILURE and NOT a statement that no review exists." >&2
@@ -72,7 +72,7 @@ run_gate() {
     # had just refused a pull request read "No current review by an independent agent" and could not
     # tell its verdict had landed from its comment never being parsed. Caught by a reviewer that
     # checked the fix rather than the claim; the previous attempt grepped a log file and did not work.
-    changes-requested) echo "::error::the current review requests changes" >&2; rc=2 ;;
+    changes-requested) echo "::error::the current review requests changes" >&2; refused=1 ;;
     "") echo "::error::the review carries no Verdict:" >&2; rc=1 ;;
     *) echo "::error::unknown verdict '$verdict' — expected approve or changes-requested" >&2; rc=1 ;;
   esac
@@ -82,6 +82,19 @@ run_gate() {
     echo "::error::'$reviewer' authored commits in this PR, so its review does not establish independence" >&2
     rc=1
   fi
+
+  # A REFUSAL SURVIVES EVERY OTHER COMPLAINT ABOUT THE SAME REVIEW, and this is the line that makes
+  # it so. `rc` used to be one scalar that each check overwrote in turn, so a `changes-requested`
+  # set 2 and the independence check three lines later set 1 — and the workflow, reading the exit
+  # code to choose its wording, published "No current review by an independent agent" over a
+  # verdict that had landed and refused. That is exactly the confusion the exit code was split to
+  # end, reintroduced from the other side. Driven on PR #42: the log carried BOTH errors and the
+  # process exited 1. The refusal is the fact the reviewer needs back, so it is the one that sets
+  # the code; the other errors still print, and nothing is certified that was not certified before
+  # — 2 is a failure like 1 is.
+  # `if`, not `[ … ] && rc=2`: under `set -e` a bare AND-list whose test fails is a failing
+  # statement, and the good-approve path (refused=0) would abort the script instead of returning 0.
+  if [ "$refused" -eq 1 ]; then rc=2; fi
 
   [ "$rc" -eq 0 ] && echo "review ok: $head reviewed by '$reviewer', which authored none of its commits"
   return "$rc"
@@ -135,6 +148,15 @@ Agent: dev-a"
   _c "Reviewed-by: reviewer-a\\nReviewed-sha: 0000000000000000000000000000000000000000\\nVerdict: approve"
   local arc=0; _run >/dev/null 2>&1 || arc=$?
   [ "$arc" -eq 1 ] || { echo "SELF-TEST FAIL: an absent review exited $arc, not 1" >&2; rc=1; }
+
+  # 5b. A REFUSAL BY A NON-INDEPENDENT REVIEWER STILL EXITS 2. Case 5 only ever exercised a refusal
+  #     with nothing else wrong with it, so it stayed green while `rc` was a single scalar that the
+  #     independence check overwrote — and PR #42, whose refusal came from an agent that had also
+  #     committed, exited 1 and was published as "No current review by an independent agent". Two
+  #     complaints about one review; the refusal is the one the reviewer needs back.
+  _c "Reviewed-by: dev-a\\nReviewed-sha: $head\\nVerdict: changes-requested"
+  local nrc=0; _run >/dev/null 2>&1 || nrc=$?
+  [ "$nrc" -eq 2 ] || { echo "SELF-TEST FAIL: a refusal by a non-independent reviewer exited $nrc, not 2 — a landed refusal reads as no review at all" >&2; rc=1; }
 
   # 6. AN ACCURATE SHORT REVIEW MUST PASS. The previous build's character floor rejected a
   #    38-character scope statement and accepted 45 characters of "looks fine to me".
