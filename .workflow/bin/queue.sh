@@ -198,8 +198,10 @@ reviews_waiting() {
   printf '\nPULL REQUESTS AWAITING AN INDEPENDENT VERDICT — you authored none of their commits, so the gate will accept yours:\n'
   while IFS=$'\t' read -r num sha title; do
     [ -n "$num" ] || continue
-    authors=$(api --paginate "repos/$REPO/pulls/$num/commits" \
-              | jq -r '.[].commit.message' 2>/dev/null | sed -n 's/^Agent:[[:space:]]*//p' | sort -u)
+    # THE SAME DERIVATION THE GATE USES, from the same file — see pr-authors.sh. If this queue
+    # offers you a pull request, the gate will accept your verdict on it; that promise is only
+    # keepable while there is one implementation of independence.
+    authors=$("$(dirname "${BASH_SOURCE[0]}")/pr-authors.sh" --pr "$num" 2>/dev/null || echo "")
     # NO TRAILER MEANS INDEPENDENCE CANNOT BE ESTABLISHED, WHICH IS NOT THE SAME AS "YOURS TO DO".
     # The naming gate reports that defect with its remedy and it is not this queue's to duplicate.
     [ -n "$authors" ] || continue
@@ -363,13 +365,17 @@ self_test() {
   cat > "$tmp/gh" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
-  *"pulls/9/commits"*)  echo '[{"commit":{"message":"feat(x): y\n\nAgent: dev"}}]' ;;
+  *"pulls/9/commits"*)  printf 'c9\tAgent: dev\n' ;;
+  *"/commits/c9"*)      echo 'internal/a.go' ;;
   *"pulls?state=open"*) echo '[{"number":9,"head":{"ref":"dev/feat/9-x","sha":"cafe"},"title":"feat(x): y"}]' ;;
   *"/status"*)          echo '{"statuses":[]}' ;;
   *)                    echo '[]' ;;
 esac
 STUB
   chmod +x "$tmp/gh"
+  # THE STUB RETURNS WHAT `gh --jq` WOULD RETURN, NOT RAW JSON. It does not implement `--jq`, so a
+  # fixture that hands back the unextracted object silently feeds every caller a blob that parses as
+  # nothing — the arm then fails for a reason that has nothing to do with what it is testing.
   out=$( PATH="$tmp:$PATH" REPO=x/y bash "${BASH_SOURCE[0]}" qa 2>&1 || true )
   case "$out" in
     *"/review-pr 9"*) : ;;

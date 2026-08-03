@@ -35,7 +35,13 @@ run_gate() {
   }
 
   # Who built it: the Agent: trailer of every commit in the range.
-  authors=$(git log "$base..HEAD" --format=%B | sed -n 's/^Agent:[[:space:]]*//p' | sort -u)
+  # DERIVED BY pr-authors.sh, WHICH THE ROUTING ALSO CALLS. The rule includes one exemption — a
+  # commit that changes nothing outside `openspec/` confers no authorship — and it is stated in
+  # exactly one place on purpose. product must archive onto the branch before merging, so without
+  # the exemption product authors every feature pull request and qa becomes the only role that can
+  # ever certify one. That is a single point of failure by construction, and it deadlocked a board
+  # of eleven. The exemption is earned by the diff and never by the subject line.
+  authors=$("$(dirname "${BASH_SOURCE[0]}")/pr-authors.sh" --range "$base" HEAD)
   [ -n "$authors" ] || {
     # SAY WHOSE PROBLEM THIS IS. This red is not about the review — it is about the commits, and a
     # reviewer reading "no independent review" concludes it is theirs to fix. The naming gate now

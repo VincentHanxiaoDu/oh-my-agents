@@ -158,7 +158,8 @@ CASES
 #!/usr/bin/env bash
 # One open pull request, on a branch belonging to another role, with an Agent: trailer.
 case "$*" in
-  *"pulls/7/commits"*) echo 'feat(x): y'; echo 'Agent: product' ;;
+  *"pulls/7/commits"*) printf 'c1\tAgent: product\n' ;;
+  *"/commits/c1"*)     echo 'internal/a.go' ;;
   *"state=closed"*)    echo '[]' ;;
   *"pulls?state=open"*) echo '[{"number":7,"title":"t","head":{"ref":"product/feat/7-x","sha":"deadbee"}}]' ;;
   *"/status"*)         echo '{"statuses":[]}' ;;
@@ -168,6 +169,9 @@ STUB
   chmod +x "$tmp/gh"
   printf '#!/usr/bin/env bash\nexit 128\n' > "$tmp/git"; chmod +x "$tmp/git"
   cp "${BASH_SOURCE[0]}" "$tmp/watch-prs.sh"
+  # THE SIBLING GOES WITH IT. Independence is derived by pr-authors.sh next door, so a fixture that
+  # copies only this file tests a script with half its dependencies missing.
+  cp "$(dirname "${BASH_SOURCE[0]}")/pr-authors.sh" "$tmp/pr-authors.sh"
   ( PATH="$tmp:$PATH" REPO=x/y bash "$tmp/watch-prs.sh" dev 2 >"$tmp/out" 2>&1 & echo $! > "$tmp/pid" )
   sleep 4
   local wpid; wpid=$(cat "$tmp/pid")
@@ -331,8 +335,9 @@ while true; do
         # independence from the pull request's own commit list, and a merge-base range in a local
         # clone is a different set of commits. A reviewer was wrongly cleared as independent by
         # exactly that difference and had to withdraw a verdict it had already posted.
-        authors=$(gh api "repos/$REPO/pulls/$num/commits" --paginate --jq '.[].commit.message' 2>/dev/null \
-                  | sed -n 's/^Agent:[[:space:]]*//p' | sort -u || echo "")
+        # THE SAME DERIVATION THE GATE USES, from the same file. Routing that disagrees with the
+        # gate sends a role to do work the gate will refuse, which is worse than sending it nowhere.
+        authors=$("$(dirname "${BASH_SOURCE[0]}")/pr-authors.sh" --pr "$num" 2>/dev/null || echo "")
         if [ -n "$authors" ] && ! printf '%s\n' "$authors" | grep -qi "^$role"; then
           # Only when it is actually waiting on one.
           rst=$(gh api "repos/$REPO/commits/$sha/status" --jq '[.statuses[]?|select(.context|test("Reviewed by an agent"))][0].state // ""' 2>/dev/null || echo "")
